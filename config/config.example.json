@@ -1,0 +1,11 @@
+{
+  "camera_id": 0,
+  "device_token": "REPLACE_ME_WITH_TOKEN_FROM_TIER0_SCRIPT",
+  "api_base": "https://sunrisesunset.studio",
+  "phase": "sunset",
+  "window_id": "2026-05-03-sunset-cam0",
+  "capture_window_start_utc": "2026-05-03T01:00:00Z",
+  "capture_window_end_utc": "2026-05-03T02:30:00Z",
+  "capture_interval_s": 1.0,
+  "log_level": "INFO"
+}
