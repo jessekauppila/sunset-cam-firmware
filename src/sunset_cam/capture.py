@@ -1,0 +1,43 @@
+"""picamera2 wrapper. Lazy-imports the C library so non-Pi dev machines
+can still import the package.
+"""
+
+from __future__ import annotations
+
+import io
+from typing import Any
+
+
+_camera: Any | None = None
+
+
+def _get_camera() -> Any:
+    global _camera
+    if _camera is not None:
+        return _camera
+
+    from picamera2 import Picamera2  # noqa: WPS433 (lazy import)
+
+    cam = Picamera2()
+    cfg = cam.create_still_configuration(main={"size": (1920, 1080)})
+    cam.configure(cfg)
+    cam.start()
+    _camera = cam
+    return cam
+
+
+def capture_jpeg() -> bytes:
+    cam = _get_camera()
+    buf = io.BytesIO()
+    cam.capture_file(buf, format="jpeg")
+    return buf.getvalue()
+
+
+def shutdown() -> None:
+    global _camera
+    if _camera is not None:
+        try:
+            _camera.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        _camera = None

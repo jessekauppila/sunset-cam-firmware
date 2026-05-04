@@ -1,0 +1,17 @@
+[Unit]
+Description=Sunset Cam edge-camera firmware
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/sunset-cam
+ExecStart=/opt/sunset-cam/.venv/bin/python -m sunset_cam.main /opt/sunset-cam/config/config.json
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
