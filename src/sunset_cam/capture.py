@@ -29,6 +29,8 @@ def _get_camera() -> Any:
 def capture_jpeg() -> bytes:
     cam = _get_camera()
     buf = io.BytesIO()
+    # If older picamera2 on the deployment Pi rejects this BytesIO target,
+    # the fallback is: cam.capture_image("main").save(buf, format="JPEG").
     cam.capture_file(buf, format="jpeg")
     return buf.getvalue()
 

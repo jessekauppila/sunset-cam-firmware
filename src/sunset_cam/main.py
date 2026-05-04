@@ -26,7 +26,7 @@ def run(config_path: str | Path) -> int:
     config = load_config(config_path)
 
     logging.basicConfig(
-        level=getattr(logging, config["log_level"], logging.INFO),
+        level=getattr(logging, config["log_level"].upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     log = logging.getLogger("sunset_cam")

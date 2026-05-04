@@ -29,5 +29,10 @@ if [[ ! -f "$REPO_DIR/config/config.json" ]]; then
   echo "    Then: sudo systemctl enable --now sunset-cam"
 else
   sudo systemctl enable --now sunset-cam
+  # If the service is already running, pick up any unit-file edits
+  # immediately rather than waiting for next reboot.
+  if sudo systemctl is-active --quiet sunset-cam; then
+    sudo systemctl restart sunset-cam
+  fi
   echo "==> started; tail logs with: journalctl -u sunset-cam -f"
 fi
