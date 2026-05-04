@@ -1,0 +1,4 @@
+requests>=2.31
+# picamera2 is provided by Raspberry Pi OS via apt:
+#   sudo apt install -y python3-picamera2
+# Do NOT pip install picamera2 — its native deps come from apt.
