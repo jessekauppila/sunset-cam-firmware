@@ -5,7 +5,29 @@ sunrise/sunset map. Tier 0 scope: capture JPEGs at 1 fps inside a
 hardcoded UTC capture window and POST them to
 `POST /api/cameras/<id>/snapshot` on the parent app.
 
-See `the-sunset-webcam-map/docs/device-protocol.md` for the wire spec.
+## Parent project
+
+This repo holds **only code that runs on a camera device** (Pi Zero 2 W
+under `picamera2` + systemd). Everything else — the Next.js web app,
+the snapshot ingest endpoint, the ML pipeline, the kiosk, the AR
+placement portal — lives in
+[`the-sunset-webcam-map`](../the-sunset-webcam-map) (path:
+`~/GitHub/the-sunset-webcam-map`). The split is a deliberate
+decision from 2026-05-03; see that repo's
+`docs/device-protocol.md` for the wire spec, and
+`docs/superpowers/plans/2026-05-12-tier-0-cameras.md` for the
+end-to-end deploy runbook.
+
+This firmware repo is currently **local-only** — no GitHub remote.
+The Pi deploy path used in Session 3 was `rsync` from this Mac, not
+the `git clone` example below.
+
+## Helper scripts
+
+`scripts/configure.sh` and `scripts/snap-now.sh` exist to avoid the
+nano + JSON-by-hand + sudo deploy pain from Session 3. Both run from
+the dev mac and SSH into the Pi themselves — see the header comments
+in each for usage.
 
 ## Quickstart on a fresh Pi
 
