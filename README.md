@@ -18,9 +18,9 @@ decision from 2026-05-03; see that repo's
 `docs/superpowers/plans/2026-05-12-tier-0-cameras.md` for the
 end-to-end deploy runbook.
 
-This firmware repo is currently **local-only** — no GitHub remote.
-The Pi deploy path used in Session 3 was `rsync` from this Mac, not
-the `git clone` example below.
+The Pi deploy path used in Session 3 was `rsync` from this Mac, but
+now that this repo is on GitHub the `git clone` example below works
+too.
 
 ## Helper scripts
 
