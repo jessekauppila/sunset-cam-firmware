@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from typing import Callable, Iterator
 
 from sunset_cam.orientation_sampler import OrientationSampler
 from sunset_cam.solstice_math import (
@@ -190,3 +191,36 @@ def render_orientation_json(sampler: OrientationSampler) -> str:
     after startup)."""
     latest = sampler.latest()
     return json.dumps(latest if latest is not None else {})
+
+
+MJPEG_BOUNDARY = "sunsetcamframe"
+
+
+def stream_mjpeg(
+    frame_source: Callable[[], bytes],
+    fps: int = 4,
+) -> Iterator[bytes]:
+    """Yield multipart-encoded MJPEG bytes by polling ``frame_source``.
+
+    Terminates cleanly on StopIteration (EOF) or any other exception
+    (transient camera glitch). The caller (web app) is responsible for
+    rate-limiting between frames; the ``fps`` parameter is informational.
+    """
+    boundary = MJPEG_BOUNDARY
+    while True:
+        try:
+            frame = frame_source()
+        except StopIteration:
+            return
+        except Exception:
+            return
+
+        header = (
+            f"--{boundary}\r\n"
+            f"Content-Type: image/jpeg\r\n"
+            f"Content-Length: {len(frame)}\r\n"
+            f"\r\n"
+        ).encode("ascii")
+        yield header
+        yield frame
+        yield b"\r\n"

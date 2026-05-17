@@ -95,3 +95,52 @@ def test_render_align_page_default_facing_is_west():
     html = render_align_page(lat=48.75, lng=-122.48)
     # West radio input is checked by default
     assert 'value="west" checked' in html or 'value="west"  checked' in html
+
+
+from sunset_cam.setup_alignment import stream_mjpeg, MJPEG_BOUNDARY
+
+
+def test_mjpeg_boundary_is_exported_and_nontrivial():
+    assert isinstance(MJPEG_BOUNDARY, str)
+    assert len(MJPEG_BOUNDARY) >= 8
+
+
+def test_stream_mjpeg_yields_three_frames_from_a_three_call_source():
+    frames = [b"AAA", b"BBB", b"CCC"]
+    call_index = {"i": 0}
+
+    def source() -> bytes:
+        i = call_index["i"]
+        call_index["i"] += 1
+        if i >= len(frames):
+            raise StopIteration
+        return frames[i]
+
+    out = b"".join(stream_mjpeg(source))
+    assert out.count(f"--{MJPEG_BOUNDARY}".encode()) == 3
+    assert out.count(b"Content-Type: image/jpeg") == 3
+    for f in frames:
+        assert f in out
+
+
+def test_stream_mjpeg_includes_content_length_per_part():
+    def source() -> bytes:
+        source.count = getattr(source, "count", 0) + 1
+        if source.count > 1:
+            raise StopIteration
+        return b"X" * 17
+
+    out = b"".join(stream_mjpeg(source))
+    assert b"Content-Length: 17" in out
+
+
+def test_stream_mjpeg_terminates_on_stopiteration():
+    def source() -> bytes:
+        raise StopIteration
+    assert list(stream_mjpeg(source)) == []
+
+
+def test_stream_mjpeg_swallows_source_exception_and_stops():
+    def source() -> bytes:
+        raise RuntimeError("glitch")
+    assert list(stream_mjpeg(source)) == []
