@@ -5,6 +5,7 @@ description = "Firmware for the sunrise/sunset custom edge cameras (Tier 0)."
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31",
+  "smbus2>=0.4",
 ]
 
 [project.optional-dependencies]
