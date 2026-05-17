@@ -73,3 +73,25 @@ def test_render_orientation_json_returns_latest_reading():
     assert abs(parsed["roll_deg"] - 1.5) < 0.001
     assert abs(parsed["pitch_deg"] - 2.5) < 0.001
     assert "sampled_at" in parsed
+
+
+def test_render_align_page_has_facing_selector_with_three_options():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'value="east"' in html
+    assert 'value="west"' in html
+    assert 'value="both"' in html
+
+
+def test_render_align_page_embeds_per_facing_solstice_markers_and_counts():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    # Each facing variant has its own marker x-positions + sunsets/year count
+    # rendered into the SVG.
+    assert html.count('data-facing="east"') >= 1
+    assert html.count('data-facing="west"') >= 1
+    assert html.count('data-facing="both"') >= 1
+
+
+def test_render_align_page_default_facing_is_west():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    # West radio input is checked by default
+    assert 'value="west" checked' in html or 'value="west"  checked' in html
