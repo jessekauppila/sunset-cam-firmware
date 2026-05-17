@@ -34,3 +34,20 @@ def test_render_align_page_embeds_coordinates_in_data_attrs():
     html = render_align_page(lat=48.75, lng=-122.48)
     assert 'data-lat="48.75"' in html
     assert 'data-lng="-122.48"' in html
+
+
+def test_render_align_page_includes_orientation_readout_element():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="roll-readout"' in html
+    assert 'id="pitch-readout"' in html
+
+
+def test_render_align_page_includes_polling_script_targeting_orientation_endpoint():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert "/setup/orientation.json" in html
+    assert "setInterval" in html
+
+
+def test_render_align_page_includes_level_badge():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="level-badge"' in html
