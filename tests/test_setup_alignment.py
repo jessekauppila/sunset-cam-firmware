@@ -51,3 +51,25 @@ def test_render_align_page_includes_polling_script_targeting_orientation_endpoin
 def test_render_align_page_includes_level_badge():
     html = render_align_page(lat=48.75, lng=-122.48)
     assert 'id="level-badge"' in html
+
+
+import json
+from sunset_cam.orientation_sampler import OrientationSampler
+from sunset_cam.setup_alignment import render_orientation_json
+
+
+def test_render_orientation_json_empty_when_sampler_has_no_reading():
+    sampler = OrientationSampler(reader=lambda: (0.0, 0.0))
+    body = render_orientation_json(sampler)
+    parsed = json.loads(body)
+    assert parsed == {}
+
+
+def test_render_orientation_json_returns_latest_reading():
+    sampler = OrientationSampler(reader=lambda: (1.5, 2.5))
+    sampler.sample_once()
+    body = render_orientation_json(sampler)
+    parsed = json.loads(body)
+    assert abs(parsed["roll_deg"] - 1.5) < 0.001
+    assert abs(parsed["pitch_deg"] - 2.5) < 0.001
+    assert "sampled_at" in parsed

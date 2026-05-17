@@ -11,6 +11,9 @@ Spec: docs/superpowers/specs/2026-05-17-pi-side-alignment-tool-design.md v0.2
 """
 from __future__ import annotations
 
+import json
+from sunset_cam.orientation_sampler import OrientationSampler
+
 
 def render_align_page(lat: float, lng: float) -> str:
     """Render the alignment page HTML."""
@@ -80,3 +83,11 @@ def render_align_page(lat: float, lng: float) -> str:
 </body>
 </html>
 """
+
+
+def render_orientation_json(sampler: OrientationSampler) -> str:
+    """Return the latest cached reading as a JSON string. Empty object when
+    the sampler has not yet captured anything (e.g., during the first 200 ms
+    after startup)."""
+    latest = sampler.latest()
+    return json.dumps(latest if latest is not None else {})
