@@ -8,7 +8,10 @@ REPO_DIR="${REPO_DIR:-/opt/sunset-cam}"
 
 echo "==> apt deps"
 sudo apt update
-sudo apt install -y python3-picamera2 python3-venv git
+sudo apt install -y python3-picamera2 python3-venv git i2c-tools
+
+echo "==> enable I2C (for MPU6050 IMU)"
+sudo raspi-config nonint do_i2c 0
 
 echo "==> venv at $REPO_DIR/.venv"
 if [[ ! -d "$REPO_DIR/.venv" ]]; then
