@@ -12,18 +12,21 @@ I2C bus 1, address 0x68 (default — AD0 pin tied low).
 from __future__ import annotations
 
 import math
-from typing import Protocol, Tuple
+from typing import Callable, Protocol, Tuple
 
 
 MPU6050_ADDR = 0x68
 ACCEL_XOUT_H = 0x3B  # first byte of 6 accel registers (X H, X L, Y H, Y L, Z H, Z L)
 ACCEL_FS_LSB_PER_G = 16384.0  # ±2g full-scale → 16384 LSB / g
+PWR_MGMT_1 = 0x6B  # power-management register; bit 6 (0x40) is SLEEP, set at power-on
 
 
 class I2CBus(Protocol):
-    """Minimal protocol matching smbus2.SMBus.read_i2c_block_data."""
+    """Minimal protocol matching the smbus2.SMBus methods this driver uses."""
 
     def read_i2c_block_data(self, addr: int, reg: int, length: int) -> list[int]: ...
+
+    def write_byte_data(self, addr: int, reg: int, value: int) -> None: ...
 
 
 def _u8_pair_to_i16(high: int, low: int) -> int:
@@ -61,3 +64,30 @@ def read_orientation(bus: I2CBus, addr: int = MPU6050_ADDR) -> Tuple[float, floa
     az_g = az_lsb / ACCEL_FS_LSB_PER_G
 
     return accel_to_roll_pitch(ax_g, ay_g, az_g)
+
+
+def wake(bus: I2CBus, addr: int = MPU6050_ADDR) -> None:
+    """Clear the MPU6050 SLEEP bit so the accelerometer produces real data.
+
+    The chip powers up with PWR_MGMT_1 = 0x40 (SLEEP set). Until it is cleared,
+    every accel register reads 0 and read_orientation() returns a fake (0, 0).
+    Call once after opening the bus, before reading.
+    """
+    bus.write_byte_data(addr, PWR_MGMT_1, 0x00)
+
+
+def make_orientation_reader(
+    bus: I2CBus, addr: int = MPU6050_ADDR
+) -> Callable[[], Tuple[float, float]]:
+    """Wake the MPU6050, then return a zero-arg reader for ``OrientationSampler``.
+
+    The sampler takes an injected zero-arg reader and is deliberately unaware of
+    the I2C bus. Wiring it with this factory guarantees the chip is awake before
+    the first sample, so the sampler can never silently cache (0.0, 0.0) from a
+    sleeping sensor — the bug this exists to prevent. Real Pi wiring is:
+
+        bus = smbus2.SMBus(1)
+        sampler = OrientationSampler(make_orientation_reader(bus))
+    """
+    wake(bus, addr)
+    return lambda: read_orientation(bus, addr)
