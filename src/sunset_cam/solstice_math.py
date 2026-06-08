@@ -114,6 +114,47 @@ def az_to_pixel(
     return screen_width * (0.5 + delta / fov_deg)
 
 
+def solstice_sunset_azimuths(lat_deg: float, year: int) -> tuple[float, float]:
+    """(summer_solstice_sunset_az, winter_solstice_sunset_az) compass bearings.
+    Summer ~ northernmost sunset (NW in N. hemisphere), winter ~ southernmost (SW)."""
+    summer = sunset_azimuth_for_day(lat_deg, year, 6, 21)
+    winter = sunset_azimuth_for_day(lat_deg, year, 12, 21)
+    return summer, winter
+
+
+def fov_fit(
+    lat_deg: float, lng_deg: float, center_az: float, fov_deg: float, year: int
+) -> dict:
+    """Whether the full-year sunset arc fits the FOV at this aim, how many
+    sunsets the current aim captures, and the best fixed aim if it doesn't fit."""
+    summer, winter = solstice_sunset_azimuths(lat_deg, year)
+    half = fov_deg / 2.0
+
+    def inside(az: float, center: float) -> bool:
+        d = ((az - center + 540.0) % 360.0) - 180.0
+        return -half <= d <= half
+
+    fits = inside(summer, center_az) and inside(winter, center_az)
+    captured = count_sunsets_in_fov(lat_deg, lng_deg, center_az, fov_deg, year)
+
+    best_center, best_captured = center_az, captured
+    lo, hi = sorted((summer, winter))
+    c = lo
+    while c <= hi:
+        cap = count_sunsets_in_fov(lat_deg, lng_deg, c, fov_deg, year)
+        if cap > best_captured:
+            best_center, best_captured = c, cap
+        c += 1.0
+    return {
+        "fits": fits,
+        "summer_az": summer,
+        "winter_az": winter,
+        "captured": captured,
+        "best_center_az": best_center,
+        "captured_at_best": best_captured,
+    }
+
+
 def count_sunsets_in_fov(
     lat_deg: float, lng_deg: float,
     center_az: float, fov_deg: float,

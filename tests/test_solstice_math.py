@@ -12,6 +12,8 @@ from sunset_cam.solstice_math import (
     az_to_pixel,
     count_sunsets_in_fov,
     compute_sun_azimuth,
+    solstice_sunset_azimuths,
+    fov_fit,
 )
 
 
@@ -86,3 +88,22 @@ def test_compute_sun_azimuth_due_south_near_solar_noon():
     t = datetime(2026, 3, 20, 20, 10, 0, tzinfo=timezone.utc)
     az = compute_sun_azimuth(48.7519, -122.4787, t)
     assert 174.0 <= az <= 186.0
+
+
+def test_solstice_sunset_azimuths_bellingham_span_about_74_deg():
+    summer, winter = solstice_sunset_azimuths(48.7519, 2026)
+    assert summer > winter
+    assert 70.0 <= (summer - winter) <= 78.0
+
+
+def test_fov_fit_true_when_arc_inside_fov():
+    res = fov_fit(48.7519, -122.4787, center_az=270.0, fov_deg=120.0, year=2026)
+    assert res["fits"] is True
+    assert res["captured"] == 365
+
+
+def test_fov_fit_false_and_suggests_best_aim_when_arc_too_wide():
+    res = fov_fit(48.7519, -122.4787, center_az=270.0, fov_deg=40.0, year=2026)
+    assert res["fits"] is False
+    assert res["captured"] < 365
+    assert res["captured_at_best"] >= res["captured"]
