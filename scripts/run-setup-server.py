@@ -13,9 +13,12 @@ Then open http://<pi-hostname>:8080/ on a phone on the same WiFi.
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 import smbus2
 
+from sunset_cam.aiming_config import resolve_aiming_params
 from sunset_cam.capture import capture_jpeg
 from sunset_cam.gyro_driver import make_orientation_reader
 from sunset_cam.setup_server import AimingService, serve
@@ -23,18 +26,29 @@ from sunset_cam.setup_server import AimingService, serve
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="v0.4 sun-tap aiming setup-server")
-    ap.add_argument("--lat", type=float, required=True)
-    ap.add_argument("--lng", type=float, required=True)
-    ap.add_argument("--phase", default="sunset", choices=["sunset", "sunrise"])
-    ap.add_argument("--hfov", type=float, default=102.0, help="camera horizontal FOV (deg)")
-    ap.add_argument("--width", type=int, default=1920, help="capture frame width (px)")
+    ap.add_argument("--lat", type=float, default=None)
+    ap.add_argument("--lng", type=float, default=None)
+    ap.add_argument("--phase", default=None, choices=["sunset", "sunrise", None])
+    ap.add_argument("--hfov", type=float, default=None)
+    ap.add_argument("--width", type=int, default=None)
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--config", default="/opt/sunset-cam/config/config.json")
     args = ap.parse_args()
 
-    reader = make_orientation_reader(smbus2.SMBus(1))  # wakes the MPU-6050
+    config = {}
+    cfg_path = Path(args.config)
+    if cfg_path.exists():
+        config = json.loads(cfg_path.read_text())
+    params = resolve_aiming_params(
+        cli={"lat": args.lat, "lng": args.lng, "phase": args.phase,
+             "hfov": args.hfov, "width": args.width},
+        config=config,
+    )
+
+    reader = make_orientation_reader(smbus2.SMBus(1))
     service = AimingService(
-        lat=args.lat, lng=args.lng, phase=args.phase,
-        hfov_deg=args.hfov, width=args.width,
+        lat=params["lat"], lng=params["lng"], phase=params["phase"],
+        hfov_deg=params["hfov"], width=params["width"],
         frame_source=capture_jpeg, reader=reader,
     )
     print(f"setup-server on :{args.port} — open http://<pi>:{args.port}/ from a phone")
