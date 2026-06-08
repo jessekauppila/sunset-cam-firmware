@@ -5,6 +5,7 @@ the HTTP handler is a thin adapter. Camera access is serialized by a lock."""
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -16,17 +17,28 @@ from sunset_cam.solstice_math import compute_sun_azimuth, fov_fit
 from sunset_cam.setup_alignment import render_align_page, stream_mjpeg, MJPEG_BOUNDARY
 
 
+DEFAULT_PLACEMENT_PATH = "/etc/sunset-cam/placement.json"
+
+
+def _default_placement_sink(placement: dict) -> None:
+    os.makedirs(os.path.dirname(DEFAULT_PLACEMENT_PATH), exist_ok=True)
+    with open(DEFAULT_PLACEMENT_PATH, "w") as f:
+        json.dump(placement, f)
+
+
 class AimingService:
     def __init__(
         self, *, lat: float, lng: float, phase: str, hfov_deg: float, width: int,
         frame_source: Callable[[], bytes], reader: Callable[[], tuple[float, float]],
         now_utc_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        placement_sink: Callable[[dict], None] = _default_placement_sink,
     ) -> None:
         self.lat, self.lng, self.phase = lat, lng, phase
         self.hfov_deg, self.width = hfov_deg, width
         self.frame_source = frame_source
         self.reader = reader
         self.now_utc_fn = now_utc_fn
+        self.placement_sink = placement_sink
         self.state = HeadingState(hfov_deg=hfov_deg, width=width)
         self._cam_lock = threading.Lock()
 
@@ -58,15 +70,31 @@ class AimingService:
         return json.dumps({"error": "not found"}), 404, "application/json"
 
     def handle_post(self, path: str, body: dict):
-        if path != "/setup/tap":
-            return json.dumps({"error": "not found"}), 404, "application/json"
-        roll, pitch = self._orientation()
-        sun_az = compute_sun_azimuth(self.lat, self.lng, self.now_utc_fn())
-        ok = self.state.apply_tap(sun_az, float(body["pixel_x"]), roll, pitch)
-        if not ok:
-            return (json.dumps({"status": "uncalibrated", "error": "level the camera first"}),
-                    422, "application/json")
-        return json.dumps(self._fit_payload()), 200, "application/json"
+        if path == "/setup/tap":
+            roll, pitch = self._orientation()
+            sun_az = compute_sun_azimuth(self.lat, self.lng, self.now_utc_fn())
+            ok = self.state.apply_tap(sun_az, float(body["pixel_x"]), roll, pitch)
+            if not ok:
+                return (json.dumps({"status": "uncalibrated", "error": "level the camera first"}),
+                        422, "application/json")
+            return json.dumps(self._fit_payload()), 200, "application/json"
+        if path == "/setup/confirm":
+            roll, pitch = self._orientation()
+            self.state.update_orientation(roll, pitch)
+            if self.state.status() != "tapped":
+                return (json.dumps({"status": self.state.status(),
+                                    "error": "aim not set — tap the sun first"}),
+                        409, "application/json")
+            placement = {
+                "azimuth_deg": self.state.heading_deg(),
+                "tilt_deg": pitch,
+                "roll_deg": roll,
+                "confirmed_at": self.now_utc_fn().isoformat(),
+            }
+            self.placement_sink(placement)
+            return (json.dumps({"status": "confirmed", "placement": placement}),
+                    200, "application/json")
+        return json.dumps({"error": "not found"}), 404, "application/json"
 
     def preview_status(self) -> int:
         """200 if a frame can be grabbed, 503 if the camera is unavailable/busy."""

@@ -31,3 +31,32 @@ def test_preview_returns_503_when_camera_busy():
     def boom():
         raise RuntimeError("camera in use")
     assert _service(frame_source=boom).preview_status() == 503
+
+def test_confirm_in_tapped_state_returns_placement():
+    sink = []
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (0.2, 1.0),
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        placement_sink=sink.append,
+    )
+    svc.handle_post("/setup/tap", {"pixel_x": 800, "pixel_y": 450})  # -> tapped
+    body, status, _ = svc.handle_post("/setup/confirm", {})
+    assert status == 200
+    data = json.loads(body)
+    assert data["status"] == "confirmed"
+    assert data["placement"]["azimuth_deg"] == svc.state.heading_deg()
+    assert data["placement"]["tilt_deg"] == 1.0
+    assert data["placement"]["roll_deg"] == 0.2
+    assert "confirmed_at" in data["placement"]
+    assert sink == [data["placement"]]
+
+def test_confirm_without_tap_returns_409():
+    svc = AimingService(
+        lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (0.0, 0.0),
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        placement_sink=lambda p: None,
+    )
+    body, status, _ = svc.handle_post("/setup/confirm", {})
+    assert status == 409
