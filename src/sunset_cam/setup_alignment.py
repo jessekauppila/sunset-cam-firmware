@@ -27,6 +27,32 @@ SCREEN_W = 1600          # Match SVG viewBox width
 SCREEN_H = 900           # Match SVG viewBox height
 HORIZON_Y = 450          # Vertical center
 
+_AIM_SCRIPT = """
+<script>
+  const _img = document.querySelector('.preview-wrap img');
+  if (_img) _img.addEventListener('pointerdown', async (e) => {
+    const r = _img.getBoundingClientRect();
+    const px = Math.round((e.clientX - r.left) / r.width * (_img.naturalWidth || 1600));
+    const py = Math.round((e.clientY - r.top) / r.height * (_img.naturalHeight || 900));
+    const resp = await fetch('/setup/tap', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pixel_x: px, pixel_y: py})});
+    window._lastTap = await resp.json();
+  });
+  async function pollHeadingState() {
+    try {
+      const s = await (await fetch('/setup/state.json', {cache: 'no-store'})).json();
+      document.body.dataset.headingStatus = s.status;
+      const b = document.getElementById('heading-badge');
+      if (b) b.textContent = (s.status === 'tapped')
+        ? ('aimed ' + Math.round(s.heading_deg) + '\\u00b0' + (s.fits ? ' \\u2713' : ' \\u2014 clipped'))
+        : (s.status === 'suspect' ? 're-tap' : 'tap the sun');
+    } catch (e) {}
+  }
+  setInterval(pollHeadingState, 400); pollHeadingState();
+</script>
+"""
+
 
 def _facing_data(lat: float, lng: float, year: int) -> dict:
     """Pre-compute marker positions + sunsets/year counts for each facing."""
@@ -67,7 +93,7 @@ def _marker_group(facing: str, data: dict) -> str:
     return f'<g class="facing-group" data-facing="{facing}">{wedge}{j_line}{d_line}</g>'
 
 
-def render_align_page(lat: float, lng: float, year: int | None = None) -> str:
+def render_align_page(lat: float, lng: float, year: int | None = None, phase: str = "sunset") -> str:
     """Render the alignment page HTML."""
     if year is None:
         year = date.today().year
@@ -80,7 +106,7 @@ def render_align_page(lat: float, lng: float, year: int | None = None) -> str:
         for name in ("east", "west", "both")
     )
 
-    return f"""<!doctype html>
+    html = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -100,6 +126,7 @@ def render_align_page(lat: float, lng: float, year: int | None = None) -> str:
     .facing-form input {{ display: none; }}
     .facing-form input:checked + label {{ background: #2a4a7a; border-color: #4a7acc; }}
     .facing-group, .counter {{ display: none; }}
+    body:not([data-heading-status="tapped"]) .facing-group {{ display: none; }}
     body[data-current-facing="east"] .facing-group[data-facing="east"],
     body[data-current-facing="east"] .counter[data-facing="east"],
     body[data-current-facing="west"] .facing-group[data-facing="west"],
@@ -112,11 +139,12 @@ def render_align_page(lat: float, lng: float, year: int | None = None) -> str:
     .instructions ol {{ padding-left: 1.2em; }}
   </style>
 </head>
-<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west">
+<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated">
   <div class="top-hud">
     <span>roll: <span id="roll-readout" class="readout">—</span></span>
     <span>pitch: <span id="pitch-readout" class="readout">—</span></span>
     <span id="level-badge" class="level-badge">checking…</span>
+    <span id="heading-badge" class="level-badge">tap the sun</span>
   </div>
 
   <div class="preview-wrap">
@@ -183,6 +211,7 @@ def render_align_page(lat: float, lng: float, year: int | None = None) -> str:
 </body>
 </html>
 """
+    return html.replace("</body>", _AIM_SCRIPT + "</body>")
 
 
 def render_orientation_json(sampler: OrientationSampler) -> str:

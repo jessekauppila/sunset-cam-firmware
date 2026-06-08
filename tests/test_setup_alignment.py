@@ -144,3 +144,19 @@ def test_stream_mjpeg_swallows_source_exception_and_stops():
     def source() -> bytes:
         raise RuntimeError("glitch")
     assert list(stream_mjpeg(source)) == []
+
+
+def test_align_page_accepts_phase_and_defaults_sunset():
+    html = render_align_page(48.7519, -122.4787, phase="sunrise")
+    assert 'data-phase="sunrise"' in html
+
+
+def test_align_page_posts_tap_to_setup_tap_endpoint():
+    html = render_align_page(48.7519, -122.4787)
+    assert "/setup/tap" in html
+    assert "addEventListener" in html and ("click" in html or "pointerdown" in html)
+
+
+def test_align_page_polls_state_json():
+    html = render_align_page(48.7519, -122.4787)
+    assert "/setup/state.json" in html
