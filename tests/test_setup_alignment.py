@@ -160,3 +160,9 @@ def test_align_page_posts_tap_to_setup_tap_endpoint():
 def test_align_page_polls_state_json():
     html = render_align_page(48.7519, -122.4787)
     assert "/setup/state.json" in html
+
+
+def test_align_page_has_confirm_button_posting_to_confirm():
+    html = render_align_page(48.7519, -122.4787)
+    assert "/setup/confirm" in html
+    assert "confirm-aim" in html

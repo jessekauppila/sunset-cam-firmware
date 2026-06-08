@@ -28,6 +28,7 @@ SCREEN_H = 900           # Match SVG viewBox height
 HORIZON_Y = 450          # Vertical center
 
 _AIM_SCRIPT = """
+<button id="confirm-aim" hidden>Confirm aim</button>
 <script>
   const _img = document.querySelector('.preview-wrap img');
   if (_img) _img.addEventListener('pointerdown', async (e) => {
@@ -39,10 +40,18 @@ _AIM_SCRIPT = """
       body: JSON.stringify({pixel_x: px, pixel_y: py})});
     window._lastTap = await resp.json();
   });
+  const _confirm = document.getElementById('confirm-aim');
+  if (_confirm) _confirm.addEventListener('click', async () => {
+    const resp = await fetch('/setup/confirm', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'});
+    const j = await resp.json();
+    if (j.status === 'confirmed') _confirm.textContent = 'Aim confirmed \\u2713';
+  });
   async function pollHeadingState() {
     try {
       const s = await (await fetch('/setup/state.json', {cache: 'no-store'})).json();
       document.body.dataset.headingStatus = s.status;
+      if (_confirm) _confirm.hidden = (s.status !== 'tapped');
       const b = document.getElementById('heading-badge');
       if (b) b.textContent = (s.status === 'tapped')
         ? ('aimed ' + Math.round(s.heading_deg) + '\\u00b0' + (s.fits ? ' \\u2713' : ' \\u2014 clipped'))
