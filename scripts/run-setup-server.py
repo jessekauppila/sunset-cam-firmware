@@ -21,6 +21,7 @@ import smbus2
 from sunset_cam.aiming_config import resolve_aiming_params
 from sunset_cam.capture import capture_jpeg
 from sunset_cam.gyro_driver import make_orientation_reader
+from sunset_cam.placement_report import post_placement
 from sunset_cam.setup_server import AimingService, serve
 
 
@@ -50,6 +51,7 @@ def main() -> None:
         lat=params["lat"], lng=params["lng"], phase=params["phase"],
         hfov_deg=params["hfov"], width=params["width"],
         frame_source=capture_jpeg, reader=reader,
+        placement_sink=lambda placement: post_placement(config, placement),
     )
     print(f"setup-server on :{args.port} — open http://<pi>:{args.port}/ from a phone")
     serve(service, args.port)
