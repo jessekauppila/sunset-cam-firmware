@@ -65,3 +65,42 @@ def test_read_orientation_handles_negative_raw_values():
     bus = FakeBus()
     roll, pitch = read_orientation(bus)
     assert abs(abs(roll) - 180.0) < 0.5
+
+
+def test_wake_clears_sleep_bit():
+    # The MPU6050 powers up asleep (PWR_MGMT_1 bit 6 set). wake() must write
+    # 0x00 to PWR_MGMT_1 (0x6B) at the default address so accel data is real.
+    writes = []
+
+    class FakeBus:
+        def write_byte_data(self, addr, reg, value):
+            writes.append((addr, reg, value))
+
+    from sunset_cam.gyro_driver import wake
+
+    wake(FakeBus())
+    assert writes == [(0x68, 0x6B, 0x00)]
+
+
+def test_make_orientation_reader_wakes_then_returns_zero_arg_reader():
+    # The factory must wake the chip at construction (so the sampler can never
+    # cache zeros from a sleeping sensor), then return a zero-arg reader that
+    # yields (roll, pitch) from the accelerometer.
+    writes = []
+
+    class FakeBus:
+        def write_byte_data(self, addr, reg, value):
+            writes.append((addr, reg, value))
+
+        def read_i2c_block_data(self, addr, reg, length):
+            # z = 16384 LSB = 1g → flat
+            return [0x00, 0x00, 0x00, 0x00, 0x40, 0x00]
+
+    from sunset_cam.gyro_driver import make_orientation_reader
+
+    reader = make_orientation_reader(FakeBus())
+    assert (0x68, 0x6B, 0x00) in writes  # woken at construction
+
+    roll, pitch = reader()  # zero-arg
+    assert abs(roll) < 0.1
+    assert abs(pitch) < 0.1
