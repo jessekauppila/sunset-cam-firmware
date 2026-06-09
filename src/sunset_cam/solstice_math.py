@@ -72,6 +72,35 @@ def sunset_azimuth_for_day(lat_deg: float, year: int, month: int, day: int) -> f
     return (360.0 - az_from_north_deg) % 360.0
 
 
+def compute_sun_azimuth(lat_deg: float, lng_deg: float, t_utc) -> float:
+    """Azimuth (degrees from North, clockwise) of the sun at time t_utc (a
+    timezone-aware UTC datetime) seen from (lat, lng). NOAA approximation,
+    good to ~+/-1 degree. Reuses the declination model used elsewhere here."""
+    jd = _julian_day(t_utc.year, t_utc.month, t_utc.day)
+    n = jd - 2451545.0
+    g = math.radians((357.528 + 0.9856003 * n) % 360.0)
+    lam = math.radians(
+        (280.460 + 0.9856474 * n + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g)) % 360.0
+    )
+    eps = math.radians(23.439 - 0.0000004 * n)
+    decl = math.asin(math.sin(eps) * math.sin(lam))
+
+    ra_deg = math.degrees(math.atan2(math.cos(eps) * math.sin(lam), math.cos(lam))) % 360.0
+    l_mean = (280.460 + 0.9856474 * n) % 360.0
+    eot_min = 4.0 * (((l_mean - ra_deg + 180.0) % 360.0) - 180.0)
+
+    minutes_utc = t_utc.hour * 60.0 + t_utc.minute + t_utc.second / 60.0
+    true_solar_min = (minutes_utc + eot_min + 4.0 * lng_deg) % 1440.0
+    hour_angle = math.radians(true_solar_min / 4.0 - 180.0)
+
+    phi = math.radians(lat_deg)
+    gamma = math.atan2(
+        math.sin(hour_angle),
+        math.cos(hour_angle) * math.sin(phi) - math.tan(decl) * math.cos(phi),
+    )
+    return (math.degrees(gamma) + 180.0) % 360.0
+
+
 def az_to_pixel(
     az_deg: float, center_az: float, fov_deg: float, screen_width: int
 ) -> float:
@@ -83,6 +112,47 @@ def az_to_pixel(
     # Signed delta in [-180, 180]
     delta = ((az_deg - center_az + 540.0) % 360.0) - 180.0
     return screen_width * (0.5 + delta / fov_deg)
+
+
+def solstice_sunset_azimuths(lat_deg: float, year: int) -> tuple[float, float]:
+    """(summer_solstice_sunset_az, winter_solstice_sunset_az) compass bearings.
+    Summer ~ northernmost sunset (NW in N. hemisphere), winter ~ southernmost (SW)."""
+    summer = sunset_azimuth_for_day(lat_deg, year, 6, 21)
+    winter = sunset_azimuth_for_day(lat_deg, year, 12, 21)
+    return summer, winter
+
+
+def fov_fit(
+    lat_deg: float, lng_deg: float, center_az: float, fov_deg: float, year: int
+) -> dict:
+    """Whether the full-year sunset arc fits the FOV at this aim, how many
+    sunsets the current aim captures, and the best fixed aim if it doesn't fit."""
+    summer, winter = solstice_sunset_azimuths(lat_deg, year)
+    half = fov_deg / 2.0
+
+    def inside(az: float, center: float) -> bool:
+        d = ((az - center + 540.0) % 360.0) - 180.0
+        return -half <= d <= half
+
+    fits = inside(summer, center_az) and inside(winter, center_az)
+    captured = count_sunsets_in_fov(lat_deg, lng_deg, center_az, fov_deg, year)
+
+    best_center, best_captured = center_az, captured
+    lo, hi = sorted((summer, winter))
+    c = lo
+    while c <= hi:
+        cap = count_sunsets_in_fov(lat_deg, lng_deg, c, fov_deg, year)
+        if cap > best_captured:
+            best_center, best_captured = c, cap
+        c += 1.0
+    return {
+        "fits": fits,
+        "summer_az": summer,
+        "winter_az": winter,
+        "captured": captured,
+        "best_center_az": best_center,
+        "captured_at_best": best_captured,
+    }
 
 
 def count_sunsets_in_fov(
