@@ -58,6 +58,44 @@ _AIM_SCRIPT = """
     const j = await resp.json();
     if (j.status === 'confirmed') _confirm.textContent = 'Aim confirmed \\u2713';
   });
+  async function postHeading(deg, source) {
+    const resp = await fetch('/setup/heading', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({heading_deg: deg, source: source})});
+    return resp.json();
+  }
+  const _setManual = document.getElementById('set-manual-heading');
+  if (_setManual) _setManual.addEventListener('click', async () => {
+    const v = parseFloat(document.getElementById('manual-heading').value);
+    if (!isNaN(v)) await postHeading(v, 'manual');
+  });
+  const _usePhone = document.getElementById('use-phone-compass');
+  const _phoneOut = document.getElementById('phone-heading-readout');
+  if (_usePhone) _usePhone.addEventListener('click', async () => {
+    if (!window.isSecureContext) {
+      if (_phoneOut) _phoneOut.textContent = 'phone compass needs HTTPS — use manual for now';
+      return;
+    }
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const perm = await DeviceOrientationEvent.requestPermission();
+        if (perm !== 'granted') { if (_phoneOut) _phoneOut.textContent = 'permission denied'; return; }
+      }
+      window.addEventListener('deviceorientation', (e) => {
+        const h = (e.webkitCompassHeading != null) ? e.webkitCompassHeading
+                : (e.absolute && e.alpha != null) ? (360 - e.alpha) % 360 : null;
+        if (h != null && _phoneOut) {
+          _phoneOut.dataset.heading = h;
+          _phoneOut.textContent = 'phone heading ' + Math.round(h) + '° — tap to capture';
+        }
+      });
+      if (_phoneOut) _phoneOut.onclick = async () => {
+        const h = parseFloat(_phoneOut.dataset.heading);
+        if (!isNaN(h)) { await postHeading(h, 'phone'); _phoneOut.textContent = 'captured ' + Math.round(h) + '°'; }
+      };
+    } catch (err) { if (_phoneOut) _phoneOut.textContent = 'compass unavailable'; }
+  });
   async function pollHeadingState() {
     try {
       const s = await (await fetch('/setup/state.json', {cache: 'no-store'})).json();
@@ -184,6 +222,12 @@ def render_align_page(
     .tilt-banner.warn {{ background: #5a1f1f; color: #ffd6d6; }}
     .tilt-banner.ok {{ background: #1f4a24; color: #d8ffd8; }}
     #tap-marker {{ pointer-events: none; }}
+    .heading-source {{ padding: 8px 20px; max-width: 560px; margin: 0 auto; }}
+    .heading-source summary {{ cursor: pointer; color: #9cc4ff; }}
+    .hs-row {{ display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }}
+    .heading-source input {{ width: 80px; padding: 4px; }}
+    .heading-source button {{ padding: 6px 12px; border-radius: 6px; border: 1px solid #4a7acc; background: #1c2a44; color: #fff; }}
+    #phone-heading-readout {{ font-size: 13px; color: #ffcc66; }}
   </style>
 </head>
 <body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated" data-mount-roll-ref="{mount_roll_ref_deg}" data-mount-pitch-ref="{mount_pitch_ref_deg}" data-level-tol="{level_tol_deg}">
@@ -222,6 +266,22 @@ def render_align_page(
 
   <div class="counter-bar">
 {counter_spans}
+  </div>
+
+  <div class="heading-source">
+    <details>
+      <summary>No sun? Set the heading another way</summary>
+      <div class="hs-row">
+        <label>Heading&deg;
+          <input id="manual-heading" type="number" min="0" max="359" inputmode="numeric" />
+        </label>
+        <button id="set-manual-heading" type="button">Set</button>
+      </div>
+      <div class="hs-row">
+        <button id="use-phone-compass" type="button">Use my phone&rsquo;s compass</button>
+        <span id="phone-heading-readout"></span>
+      </div>
+    </details>
   </div>
 
   <div class="instructions">

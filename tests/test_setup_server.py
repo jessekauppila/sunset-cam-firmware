@@ -110,6 +110,32 @@ def test_confirm_in_tapped_state_returns_placement():
     assert "confirmed_at" in data["placement"]
     assert sink == [data["placement"]]
 
+def test_set_heading_endpoint_anchors_a_confirmable_heading():
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (0.2, 1.0),
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        placement_sink=lambda p: None,
+    )
+    body, status, _ = svc.handle_post("/setup/heading", {"heading_deg": 250, "source": "phone"})
+    assert status == 200
+    data = json.loads(body)
+    assert data["status"] == "tapped"
+    assert abs(data["heading_deg"] - 250) < 1
+    # and it's now confirmable
+    body2, status2, _ = svc.handle_post("/setup/confirm", {})
+    assert status2 == 200
+
+def test_set_heading_refused_when_off_level_returns_422():
+    svc = AimingService(
+        lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (40.0, 0.0),  # way off level
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        placement_sink=lambda p: None,
+    )
+    body, status, _ = svc.handle_post("/setup/heading", {"heading_deg": 250})
+    assert status == 422
+
 def test_confirm_without_tap_returns_409():
     svc = AimingService(
         lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,

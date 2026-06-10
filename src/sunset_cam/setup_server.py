@@ -129,6 +129,15 @@ class AimingService:
                 return (json.dumps({"status": "uncalibrated", "error": "level the camera first"}),
                         422, "application/json")
             return json.dumps(self._fit_payload()), 200, "application/json"
+        if path == "/setup/heading":
+            # direct heading from a non-sun source (phone compass / manual dial)
+            roll, pitch = self._orientation()
+            ok = self.state.apply_heading(float(body["heading_deg"]), roll, pitch)
+            if not ok:
+                return (json.dumps({"status": "uncalibrated",
+                                    "error": "level the camera first"}),
+                        422, "application/json")
+            return json.dumps(self._fit_payload()), 200, "application/json"
         if path == "/setup/confirm":
             roll, pitch = self._orientation()
             status, heading, _ = self._current_aim(roll, pitch)

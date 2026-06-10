@@ -79,6 +79,14 @@ def test_render_align_page_includes_sun_dot_and_tracking_handling():
     assert "sun_fx" in html                # positions the dot from state.json fractions
 
 
+def test_render_align_page_includes_heading_source_panel():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert "/setup/heading" in html              # manual + phone post here
+    assert 'id="manual-heading"' in html         # manual dial input
+    assert 'id="use-phone-compass"' in html      # phone-compass button
+    assert "isSecureContext" in html             # HTTPS feature-gate for the compass API
+
+
 import json
 from sunset_cam.orientation_sampler import OrientationSampler
 from sunset_cam.setup_alignment import render_orientation_json

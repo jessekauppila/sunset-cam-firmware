@@ -71,3 +71,24 @@ def test_flat_zero_refused_when_reference_is_minus_90():
     # the old "level" (roll 0) is now off-reference and must be refused
     s = _mounted_state()
     assert s.apply_tap(sun_azimuth_deg=300.0, tap_px_x=800.0, roll_deg=0.0, pitch_deg=0.0) is False
+
+
+# --- direct heading anchor (phone compass / manual dial) ---
+
+def test_apply_heading_sets_heading_directly_when_level():
+    s = _mounted_state()
+    ok = s.apply_heading(heading_deg=250.0, roll_deg=-90.0, pitch_deg=0.0)
+    assert ok is True
+    assert s.status() == "tapped"
+    assert abs(s.heading_deg() - 250.0) < 1e-9
+
+def test_apply_heading_refused_off_level():
+    s = _mounted_state()
+    ok = s.apply_heading(heading_deg=250.0, roll_deg=0.0, pitch_deg=0.0)  # off the -90 ref
+    assert ok is False
+    assert s.status() == "uncalibrated"
+
+def test_apply_heading_normalizes_mod_360():
+    s = _mounted_state()
+    s.apply_heading(heading_deg=400.0, roll_deg=-90.0, pitch_deg=0.0)
+    assert abs(s.heading_deg() - 40.0) < 1e-9

@@ -59,6 +59,17 @@ class HeadingState:
         self._suspect = False
         return True
 
+    def apply_heading(self, heading_deg: float, roll_deg: float, pitch_deg: float) -> bool:
+        """Anchor heading directly from a non-sun source (phone compass / manual dial).
+        Gated on the mount-level check like apply_tap, but no sun pixel is needed."""
+        if (abs(roll_deg - self._roll_ref) > self._level_tol
+                or abs(pitch_deg - self._pitch_ref) > self._level_tol):
+            return False
+        self._heading = heading_deg % 360.0
+        self._tap_roll, self._tap_pitch = roll_deg, pitch_deg
+        self._suspect = False
+        return True
+
     def update_orientation(self, roll_deg: float, pitch_deg: float) -> None:
         """Called as live roll/pitch arrive. Flags suspect if tilt drifted
         from its value at tap-time (the housing moved)."""
