@@ -53,6 +53,25 @@ def test_render_align_page_includes_level_badge():
     assert 'id="level-badge"' in html
 
 
+def test_render_align_page_embeds_mount_reference_data_attrs():
+    # frontend banner/badge must enforce the same mount reference the backend gate uses
+    html = render_align_page(lat=48.75, lng=-122.48,
+                             mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0)
+    assert 'data-mount-roll-ref="-90.0"' in html
+    assert 'data-mount-pitch-ref="0.0"' in html
+    assert 'data-level-tol="15.0"' in html
+
+
+def test_render_align_page_includes_tilt_warning_banner():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="tilt-banner"' in html
+
+
+def test_render_align_page_includes_tap_marker_circle():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="tap-marker"' in html
+
+
 import json
 from sunset_cam.orientation_sampler import OrientationSampler
 from sunset_cam.setup_alignment import render_orientation_json

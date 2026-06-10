@@ -50,6 +50,9 @@ def main() -> None:
     service = AimingService(
         lat=params["lat"], lng=params["lng"], phase=params["phase"],
         hfov_deg=params["hfov"], width=params["width"],
+        mount_roll_ref_deg=params["mount_roll_ref"],
+        mount_pitch_ref_deg=params["mount_pitch_ref"],
+        level_tol_deg=params["level_tol"],
         frame_source=capture_jpeg, reader=reader,
         placement_sink=lambda placement: post_placement(config, placement),
     )

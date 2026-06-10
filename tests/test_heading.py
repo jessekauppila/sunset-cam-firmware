@@ -37,3 +37,37 @@ def test_becomes_suspect_when_tilt_drifts_from_tap_time():
     s.apply_tap(sun_azimuth_deg=300.0, tap_px_x=800.0, roll_deg=0.0, pitch_deg=0.0)
     s.update_orientation(roll_deg=10.0, pitch_deg=0.0)
     assert s.status() == "suspect"
+
+
+# --- mount-referenced level gate (IMU rotated 90deg vs a landscape camera) ---
+
+def _mounted_state():
+    return HeadingState(
+        hfov_deg=120.0, width=1600,
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+    )
+
+def test_tap_accepted_at_mount_reference():
+    # correctly mounted cam1 reads roll -90 / pitch 0
+    s = _mounted_state()
+    ok = s.apply_tap(sun_azimuth_deg=300.0, tap_px_x=800.0, roll_deg=-90.0, pitch_deg=0.0)
+    assert ok is True
+    assert s.status() == "tapped"
+
+def test_tap_accepted_within_tolerance_of_reference():
+    s = _mounted_state()
+    # 12 deg off roll, 10 off pitch -> inside +/-15
+    ok = s.apply_tap(sun_azimuth_deg=300.0, tap_px_x=800.0, roll_deg=-78.0, pitch_deg=10.0)
+    assert ok is True
+
+def test_tap_refused_beyond_tolerance_of_reference():
+    s = _mounted_state()
+    # 20 deg off roll -> outside +/-15
+    ok = s.apply_tap(sun_azimuth_deg=300.0, tap_px_x=800.0, roll_deg=-70.0, pitch_deg=0.0)
+    assert ok is False
+    assert s.status() == "uncalibrated"
+
+def test_flat_zero_refused_when_reference_is_minus_90():
+    # the old "level" (roll 0) is now off-reference and must be refused
+    s = _mounted_state()
+    assert s.apply_tap(sun_azimuth_deg=300.0, tap_px_x=800.0, roll_deg=0.0, pitch_deg=0.0) is False

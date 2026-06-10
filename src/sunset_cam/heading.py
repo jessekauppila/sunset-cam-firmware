@@ -30,11 +30,16 @@ class HeadingState:
     def __init__(
         self, hfov_deg: float, width: int,
         level_tol_deg: float = 5.0, drift_tol_deg: float = 3.0,
+        mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
     ) -> None:
         self._hfov = hfov_deg
         self._width = width
         self._level_tol = level_tol_deg
         self._drift_tol = drift_tol_deg
+        # The mount's "level" orientation. cam1's IMU is fixed rotated 90deg vs a
+        # landscape camera, so it reads roll -90 / pitch 0 when correctly aimed.
+        self._roll_ref = mount_roll_ref_deg
+        self._pitch_ref = mount_pitch_ref_deg
         self._heading: float | None = None
         self._tap_roll: float | None = None
         self._tap_pitch: float | None = None
@@ -44,8 +49,10 @@ class HeadingState:
         self, sun_azimuth_deg: float, tap_px_x: float, roll_deg: float, pitch_deg: float
     ) -> bool:
         """Anchor heading from a sun-tap. Refuses (returns False) if the camera
-        isn't level enough for the horizontal-pixel->azimuth mapping to hold."""
-        if abs(roll_deg) > self._level_tol or abs(pitch_deg) > self._level_tol:
+        isn't level enough (relative to its mount reference) for the
+        horizontal-pixel->azimuth mapping to hold."""
+        if (abs(roll_deg - self._roll_ref) > self._level_tol
+                or abs(pitch_deg - self._pitch_ref) > self._level_tol):
             return False
         self._heading = heading_from_tap(sun_azimuth_deg, tap_px_x, self._width, self._hfov)
         self._tap_roll, self._tap_pitch = roll_deg, pitch_deg

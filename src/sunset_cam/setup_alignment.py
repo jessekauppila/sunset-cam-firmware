@@ -31,10 +31,20 @@ _AIM_SCRIPT = """
 <button id="confirm-aim" hidden>Confirm aim</button>
 <script>
   const _img = document.querySelector('.preview-wrap img');
+  const _overlay = document.querySelector('.overlay');
+  const _marker = document.getElementById('tap-marker');
   if (_img) _img.addEventListener('pointerdown', async (e) => {
     const r = _img.getBoundingClientRect();
-    const px = Math.round((e.clientX - r.left) / r.width * (_img.naturalWidth || 1600));
-    const py = Math.round((e.clientY - r.top) / r.height * (_img.naturalHeight || 900));
+    const fx = (e.clientX - r.left) / r.width;
+    const fy = (e.clientY - r.top) / r.height;
+    const px = Math.round(fx * (_img.naturalWidth || 1600));
+    const py = Math.round(fy * (_img.naturalHeight || 900));
+    if (_marker && _overlay) {
+      const vb = _overlay.viewBox.baseVal;
+      _marker.setAttribute('cx', fx * vb.width);
+      _marker.setAttribute('cy', fy * vb.height);
+      _marker.setAttribute('visibility', 'visible');
+    }
     const resp = await fetch('/setup/tap', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({pixel_x: px, pixel_y: py})});
@@ -102,8 +112,14 @@ def _marker_group(facing: str, data: dict) -> str:
     return f'<g class="facing-group" data-facing="{facing}">{wedge}{j_line}{d_line}</g>'
 
 
-def render_align_page(lat: float, lng: float, year: int | None = None, phase: str = "sunset") -> str:
-    """Render the alignment page HTML."""
+def render_align_page(
+    lat: float, lng: float, year: int | None = None, phase: str = "sunset",
+    mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
+    level_tol_deg: float = 15.0,
+) -> str:
+    """Render the alignment page HTML. The mount reference (roll/pitch the camera
+    reads when correctly mounted) drives the level badge + tilt banner, and must
+    match the backend gate so the UI and server agree on 'level enough to tap'."""
     if year is None:
         year = date.today().year
     facing = _facing_data(lat, lng, year)
@@ -146,15 +162,21 @@ def render_align_page(lat: float, lng: float, year: int | None = None, phase: st
     .counter {{ color: #ffcc66; font-weight: 600; }}
     .instructions {{ padding: 16px 20px; line-height: 1.55; max-width: 560px; margin: 0 auto; }}
     .instructions ol {{ padding-left: 1.2em; }}
+    .tilt-banner {{ padding: 11px 16px; text-align: center; font-size: 15px; font-weight: 600; }}
+    .tilt-banner.warn {{ background: #5a1f1f; color: #ffd6d6; }}
+    .tilt-banner.ok {{ background: #1f4a24; color: #d8ffd8; }}
+    #tap-marker {{ pointer-events: none; }}
   </style>
 </head>
-<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated">
+<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated" data-mount-roll-ref="{mount_roll_ref_deg}" data-mount-pitch-ref="{mount_pitch_ref_deg}" data-level-tol="{level_tol_deg}">
   <div class="top-hud">
     <span>roll: <span id="roll-readout" class="readout">—</span></span>
     <span>pitch: <span id="pitch-readout" class="readout">—</span></span>
     <span id="level-badge" class="level-badge">checking…</span>
     <span id="heading-badge" class="level-badge">tap the sun</span>
   </div>
+
+  <div id="tilt-banner" class="tilt-banner warn">checking orientation…</div>
 
   <div class="preview-wrap">
     <img src="/setup/preview.mjpg" alt="camera preview" />
@@ -164,6 +186,8 @@ def render_align_page(lat: float, lng: float, year: int | None = None, phase: st
       <text x="{SCREEN_W // 2}" y="60" fill="#ffcc66" font-size="36" text-anchor="middle"
             font-family="system-ui, sans-serif">&uarr; UP</text>
 {marker_groups}
+      <circle id="tap-marker" cx="0" cy="0" r="34" fill="none"
+              stroke="#ff5a5a" stroke-width="5" visibility="hidden" />
     </svg>
   </div>
 
@@ -183,7 +207,7 @@ def render_align_page(lat: float, lng: float, year: int | None = None, phase: st
   <div class="instructions">
     <p>Rotate the camera housing until:</p>
     <ol>
-      <li>The roll readout is close to 0° and the badge shows green.</li>
+      <li>The tilt banner turns green (“✓ Ready”) — the housing is at its mount angle.</li>
       <li>The &uarr; on screen matches the &uarr; on the housing.</li>
       <li>The shaded wedge falls inside the visible preview.</li>
     </ol>
@@ -202,10 +226,27 @@ def render_align_page(lat: float, lng: float, year: int | None = None, phase: st
         if (j.pitch_deg !== undefined) {{
           document.getElementById('pitch-readout').textContent = j.pitch_deg.toFixed(1) + '°';
         }}
+        const rollRef = parseFloat(document.body.dataset.mountRollRef || '0');
+        const pitchRef = parseFloat(document.body.dataset.mountPitchRef || '0');
+        const tol = parseFloat(document.body.dataset.levelTol || '15');
+        const dRoll = Math.abs((j.roll_deg || 0) - rollRef);
+        const dPitch = Math.abs((j.pitch_deg || 0) - pitchRef);
         const badge = document.getElementById('level-badge');
-        const level = Math.abs(j.roll_deg || 99) < 1.0 && Math.abs(j.pitch_deg || 99) < 1.0;
+        const level = dRoll < 5 && dPitch < 5;
         badge.textContent = level ? 'level' : 'tilted';
         badge.classList.toggle('ok', level);
+        const banner = document.getElementById('tilt-banner');
+        if (banner) {{
+          if (dRoll <= tol && dPitch <= tol) {{
+            banner.textContent = '✓ Ready — tap the sun';
+            banner.className = 'tilt-banner ok';
+          }} else {{
+            banner.textContent = '⚠ Camera tilted — rotate so roll ≈ ' + rollRef + '°, pitch ≈ '
+              + pitchRef + '° (now: roll ' + Math.round(j.roll_deg || 0) + '°, pitch '
+              + Math.round(j.pitch_deg || 0) + '°)';
+            banner.className = 'tilt-banner warn';
+          }}
+        }}
       }} catch (e) {{ /* swallow */ }}
     }}
     setInterval(pollOrientation, 200);

@@ -22,6 +22,18 @@ def test_tap_sets_heading_and_returns_fit():
     assert data["status"] == "tapped"
     assert "heading_deg" in data and "fits" in data
 
+def test_tap_accepts_at_configured_mount_reference():
+    # cam1: IMU rotated 90deg, reads roll -90 when correctly mounted
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (-90.0, 0.0),
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+    )
+    body, status, _ = svc.handle_post("/setup/tap", {"pixel_x": 800, "pixel_y": 450})
+    assert status == 200
+    assert json.loads(body)["status"] == "tapped"
+
 def test_orientation_json_returns_live_roll_pitch():
     body, status, _ = _service().handle_get("/setup/orientation.json")
     assert status == 200

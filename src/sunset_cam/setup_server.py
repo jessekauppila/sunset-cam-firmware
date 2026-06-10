@@ -32,6 +32,8 @@ class AimingService:
         frame_source: Callable[[], bytes], reader: Callable[[], tuple[float, float]],
         now_utc_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         placement_sink: Callable[[dict], None] = _default_placement_sink,
+        mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
+        level_tol_deg: float = 5.0,
     ) -> None:
         self.lat, self.lng, self.phase = lat, lng, phase
         self.hfov_deg, self.width = hfov_deg, width
@@ -39,7 +41,13 @@ class AimingService:
         self.reader = reader
         self.now_utc_fn = now_utc_fn
         self.placement_sink = placement_sink
-        self.state = HeadingState(hfov_deg=hfov_deg, width=width)
+        self.mount_roll_ref_deg = mount_roll_ref_deg
+        self.mount_pitch_ref_deg = mount_pitch_ref_deg
+        self.level_tol_deg = level_tol_deg
+        self.state = HeadingState(
+            hfov_deg=hfov_deg, width=width, level_tol_deg=level_tol_deg,
+            mount_roll_ref_deg=mount_roll_ref_deg, mount_pitch_ref_deg=mount_pitch_ref_deg,
+        )
         self._cam_lock = threading.Lock()
 
     def _orientation(self) -> tuple[float, float]:
@@ -61,7 +69,12 @@ class AimingService:
 
     def handle_get(self, path: str):
         if path in ("/", "/setup/align"):
-            return render_align_page(self.lat, self.lng), 200, "text/html; charset=utf-8"
+            return (render_align_page(
+                self.lat, self.lng, phase=self.phase,
+                mount_roll_ref_deg=self.mount_roll_ref_deg,
+                mount_pitch_ref_deg=self.mount_pitch_ref_deg,
+                level_tol_deg=self.level_tol_deg,
+            ), 200, "text/html; charset=utf-8")
         if path == "/setup/orientation.json":
             roll, pitch = self._orientation()
             return json.dumps({"roll_deg": roll, "pitch_deg": pitch}), 200, "application/json"
