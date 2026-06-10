@@ -7,3 +7,6 @@ config/config.json
 *.egg-info/
 build/
 dist/
+
+# Claude Code worktrees / local state
+.claude/
