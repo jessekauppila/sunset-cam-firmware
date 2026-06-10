@@ -7,12 +7,17 @@ from typing import Callable
 import requests
 
 
+def _coord(v):
+    """Coerce a lat/lng to float; the cloud serializes them as JSON strings."""
+    return float(v) if v is not None else None
+
+
 def parse_placement(body: dict) -> dict:
     """Extract the supervisor-relevant fields from a heartbeat response."""
     return {
         "placement_status": body.get("placement_status"),
-        "lat": body.get("lat"),
-        "lng": body.get("lng"),
+        "lat": _coord(body.get("lat")),
+        "lng": _coord(body.get("lng")),
     }
 
 

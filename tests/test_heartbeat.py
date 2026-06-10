@@ -8,6 +8,14 @@ def test_parse_placement_defaults_missing_to_none():
     out = parse_placement({"acknowledged_at": "t"})
     assert out == {"placement_status": None, "lat": None, "lng": None}
 
+def test_parse_placement_coerces_string_coords_to_float():
+    # the cloud serializes lat/lng as JSON strings; coerce at ingress so config.json
+    # stores real numbers (the aiming server does math.radians on them).
+    out = parse_placement({"placement_status": "awaiting_aim", "lat": "48.7", "lng": "-122.4"})
+    assert out["lat"] == 48.7 and isinstance(out["lat"], float)
+    assert out["lng"] == -122.4 and isinstance(out["lng"], float)
+    assert out["placement_status"] == "awaiting_aim"
+
 def test_post_heartbeat_posts_with_auth_and_parses():
     calls = {}
     class FakeResp:
