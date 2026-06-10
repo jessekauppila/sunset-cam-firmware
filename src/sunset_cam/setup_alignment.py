@@ -33,6 +33,7 @@ _AIM_SCRIPT = """
   const _img = document.querySelector('.preview-wrap img');
   const _overlay = document.querySelector('.overlay');
   const _marker = document.getElementById('tap-marker');
+  const _sunDot = document.getElementById('sun-dot');
   if (_img) _img.addEventListener('pointerdown', async (e) => {
     const r = _img.getBoundingClientRect();
     const fx = (e.clientX - r.left) / r.width;
@@ -61,11 +62,28 @@ _AIM_SCRIPT = """
     try {
       const s = await (await fetch('/setup/state.json', {cache: 'no-store'})).json();
       document.body.dataset.headingStatus = s.status;
-      if (_confirm) _confirm.hidden = (s.status !== 'tapped');
+      const aimed = (s.status === 'tapped' || s.status === 'tracking');
+      if (_confirm) _confirm.hidden = !aimed;
       const b = document.getElementById('heading-badge');
-      if (b) b.textContent = (s.status === 'tapped')
-        ? ('aimed ' + Math.round(s.heading_deg) + '\\u00b0' + (s.fits ? ' \\u2713' : ' \\u2014 clipped'))
-        : (s.status === 'suspect' ? 're-tap' : 'tap the sun');
+      if (b) {
+        if (aimed) {
+          const lead = (s.status === 'tracking') ? '\\u2600 tracking ' : 'aimed ';
+          b.textContent = lead + Math.round(s.heading_deg) + '\\u00b0'
+            + (s.fits ? ' \\u2713' : ' \\u2014 clipped');
+        } else {
+          b.textContent = (s.status === 'suspect') ? 're-tap' : 'tap the sun';
+        }
+      }
+      if (_sunDot && _overlay) {
+        if (s.sun_fx !== undefined) {
+          const vb = _overlay.viewBox.baseVal;
+          _sunDot.setAttribute('cx', s.sun_fx * vb.width);
+          _sunDot.setAttribute('cy', s.sun_fy * vb.height);
+          _sunDot.setAttribute('visibility', 'visible');
+        } else {
+          _sunDot.setAttribute('visibility', 'hidden');
+        }
+      }
     } catch (e) {}
   }
   setInterval(pollHeadingState, 400); pollHeadingState();
@@ -188,6 +206,8 @@ def render_align_page(
 {marker_groups}
       <circle id="tap-marker" cx="0" cy="0" r="34" fill="none"
               stroke="#ff5a5a" stroke-width="5" visibility="hidden" />
+      <circle id="sun-dot" cx="0" cy="0" r="26" fill="none"
+              stroke="#ffd54a" stroke-width="5" visibility="hidden" />
     </svg>
   </div>
 

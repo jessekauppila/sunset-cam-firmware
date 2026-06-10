@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
-from sunset_cam.heading import HeadingState
+from sunset_cam.heading import HeadingState, heading_from_tap
 from sunset_cam.solstice_math import compute_sun_azimuth, fov_fit
 from sunset_cam.setup_alignment import render_align_page, stream_mjpeg, MJPEG_BOUNDARY
+from sunset_cam.sun_detect import detect_sun_centroid
 
 
 DEFAULT_PLACEMENT_PATH = "/etc/sunset-cam/placement.json"
@@ -34,6 +35,7 @@ class AimingService:
         placement_sink: Callable[[dict], None] = _default_placement_sink,
         mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
         level_tol_deg: float = 5.0,
+        sun_source: Callable[[], "object | None"] | None = None,
     ) -> None:
         self.lat, self.lng, self.phase = lat, lng, phase
         self.hfov_deg, self.width = hfov_deg, width
@@ -44,6 +46,8 @@ class AimingService:
         self.mount_roll_ref_deg = mount_roll_ref_deg
         self.mount_pitch_ref_deg = mount_pitch_ref_deg
         self.level_tol_deg = level_tol_deg
+        # Optional live sun source (grayscale array | None) for auto-track aiming.
+        self.sun_source = sun_source
         self.state = HeadingState(
             hfov_deg=hfov_deg, width=width, level_tol_deg=level_tol_deg,
             mount_roll_ref_deg=mount_roll_ref_deg, mount_pitch_ref_deg=mount_pitch_ref_deg,
@@ -56,15 +60,49 @@ class AimingService:
         except Exception:
             return (0.0, 0.0)
 
+    def _is_level(self, roll: float, pitch: float) -> bool:
+        return (abs(roll - self.mount_roll_ref_deg) <= self.level_tol_deg
+                and abs(pitch - self.mount_pitch_ref_deg) <= self.level_tol_deg)
+
+    def _track_sun(self, roll: float, pitch: float):
+        """Live heading from the detected sun, or None. Returns
+        (heading_deg, sun_fx, sun_fy) where the fractions are 0..1 across the frame."""
+        if self.sun_source is None or not self._is_level(roll, pitch):
+            return None
+        with self._cam_lock:          # share the camera with the MJPEG preview
+            frame = self.sun_source()
+        if frame is None:
+            return None
+        c = detect_sun_centroid(frame)
+        if c is None:
+            return None
+        cx, cy = c
+        fh, fw = frame.shape[0], frame.shape[1]
+        sun_az = compute_sun_azimuth(self.lat, self.lng, self.now_utc_fn())
+        # cx is in this frame's pixel space; heading_from_tap only uses cx/width.
+        heading = heading_from_tap(sun_az, cx, fw, self.hfov_deg)
+        return heading, cx / fw, cy / fh
+
+    def _current_aim(self, roll: float, pitch: float):
+        """(status, heading|None, sun_fxy|None). Auto-track wins when the sun is
+        detected; otherwise fall back to the manual tap state."""
+        track = self._track_sun(roll, pitch)
+        if track is not None:
+            heading, fx, fy = track
+            return "tracking", heading, (fx, fy)
+        self.state.update_orientation(roll, pitch)
+        return self.state.status(), self.state.heading_deg(), None
+
     def _fit_payload(self) -> dict:
         roll, pitch = self._orientation()
-        self.state.update_orientation(roll, pitch)
-        payload = {"status": self.state.status(), "roll_deg": roll, "pitch_deg": pitch}
-        h = self.state.heading_deg()
-        if h is not None:
+        status, heading, sun = self._current_aim(roll, pitch)
+        payload = {"status": status, "roll_deg": roll, "pitch_deg": pitch}
+        if sun is not None:
+            payload["sun_fx"], payload["sun_fy"] = sun
+        if heading is not None:
             year = self.now_utc_fn().year
-            fit = fov_fit(self.lat, self.lng, h, self.hfov_deg, year)
-            payload.update({"heading_deg": h, **fit})
+            fit = fov_fit(self.lat, self.lng, heading, self.hfov_deg, year)
+            payload.update({"heading_deg": heading, **fit})
         return payload
 
     def handle_get(self, path: str):
@@ -93,13 +131,13 @@ class AimingService:
             return json.dumps(self._fit_payload()), 200, "application/json"
         if path == "/setup/confirm":
             roll, pitch = self._orientation()
-            self.state.update_orientation(roll, pitch)
-            if self.state.status() != "tapped":
-                return (json.dumps({"status": self.state.status(),
+            status, heading, _ = self._current_aim(roll, pitch)
+            if status not in ("tracking", "tapped") or heading is None:
+                return (json.dumps({"status": status,
                                     "error": "aim not set — tap the sun first"}),
                         409, "application/json")
             placement = {
-                "azimuth_deg": self.state.heading_deg(),
+                "azimuth_deg": heading,
                 "tilt_deg": pitch,
                 "roll_deg": roll,
                 "confirmed_at": self.now_utc_fn().isoformat(),

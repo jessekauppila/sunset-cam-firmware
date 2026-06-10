@@ -1,6 +1,53 @@
 import json
+import numpy as np
 from datetime import datetime, timezone
 from sunset_cam.setup_server import AimingService
+
+
+def _sun_frame(cx_col, h=120, w=200):
+    g = np.full((h, w), 40, dtype=np.uint8)
+    g[55:65, cx_col - 5:cx_col + 5] = 255   # saturated sun blob centered at cx_col
+    return g
+
+def _dim_frame(h=120, w=200):
+    return np.full((h, w), 120, dtype=np.uint8)   # no saturated region -> no sun
+
+def _tracking_service(sun_source, **kw):
+    base = dict(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=200,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (-90.0, 0.0),
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+        sun_source=sun_source,
+    )
+    base.update(kw)
+    return AimingService(**base)
+
+
+def test_state_json_tracks_when_sun_detected():
+    svc = _tracking_service(sun_source=lambda: _sun_frame(100))
+    data = json.loads(svc.handle_get("/setup/state.json")[0])
+    assert data["status"] == "tracking"
+    assert "heading_deg" in data
+    assert abs(data["sun_fx"] - 0.4975) < 0.02   # centroid ~ middle of a 200px frame
+
+def test_falls_back_to_tap_state_when_no_sun_detected():
+    svc = _tracking_service(sun_source=_dim_frame)
+    data = json.loads(svc.handle_get("/setup/state.json")[0])
+    assert data["status"] == "uncalibrated"
+    # a manual tap still works as the fallback
+    body, status, _ = svc.handle_post("/setup/tap", {"pixel_x": 100})
+    assert json.loads(body)["status"] == "tapped"
+
+def test_confirm_in_tracking_state_returns_placement():
+    sink = []
+    svc = _tracking_service(sun_source=lambda: _sun_frame(100), placement_sink=sink.append)
+    body, status, _ = svc.handle_post("/setup/confirm", {})  # no tap, but tracking
+    assert status == 200
+    data = json.loads(body)
+    assert data["status"] == "confirmed"
+    assert "azimuth_deg" in data["placement"]
+    assert sink == [data["placement"]]
 
 def _service(frame_source=None):
     return AimingService(

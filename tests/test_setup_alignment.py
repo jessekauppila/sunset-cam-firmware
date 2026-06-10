@@ -72,6 +72,13 @@ def test_render_align_page_includes_tap_marker_circle():
     assert 'id="tap-marker"' in html
 
 
+def test_render_align_page_includes_sun_dot_and_tracking_handling():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="sun-dot"' in html          # live marker at the detected sun centroid
+    assert "tracking" in html              # the JS handles the auto-track status
+    assert "sun_fx" in html                # positions the dot from state.json fractions
+
+
 import json
 from sunset_cam.orientation_sampler import OrientationSampler
 from sunset_cam.setup_alignment import render_orientation_json

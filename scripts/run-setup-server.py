@@ -19,7 +19,7 @@ from pathlib import Path
 import smbus2
 
 from sunset_cam.aiming_config import resolve_aiming_params
-from sunset_cam.capture import capture_jpeg
+from sunset_cam.capture import capture_jpeg, capture_gray_array
 from sunset_cam.gyro_driver import make_orientation_reader
 from sunset_cam.placement_report import post_placement
 from sunset_cam.setup_server import AimingService, serve
@@ -54,6 +54,7 @@ def main() -> None:
         mount_pitch_ref_deg=params["mount_pitch_ref"],
         level_tol_deg=params["level_tol"],
         frame_source=capture_jpeg, reader=reader,
+        sun_source=capture_gray_array,
         placement_sink=lambda placement: post_placement(config, placement),
     )
     print(f"setup-server on :{args.port} — open http://<pi>:{args.port}/ from a phone")

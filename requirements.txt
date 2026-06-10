@@ -1,4 +1,5 @@
 requests>=2.31
+numpy>=1.24  # sun-centroid detection (already present on the Pi via picamera2)
 # picamera2 is provided by Raspberry Pi OS via apt:
 #   sudo apt install -y python3-picamera2
 # Do NOT pip install picamera2 — its native deps come from apt.
