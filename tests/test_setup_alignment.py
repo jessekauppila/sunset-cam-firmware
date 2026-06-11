@@ -79,6 +79,15 @@ def test_render_align_page_includes_sun_dot_and_tracking_handling():
     assert "sun_fx" in html                # positions the dot from state.json fractions
 
 
+def test_render_align_page_includes_world_locked_ar_arc():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="ar-arc"' in html                 # the AR sunset-arc group
+    assert 'id="arc-equinox"' in html            # the three bearing lines
+    assert 'data-arc-summer="' in html           # bearings embedded for client-side az->pixel
+    assert "positionArc" in html                 # JS that pins lines to true bearings vs heading
+    assert 'id="arc-arrow-left"' in html         # off-screen edge arrows
+
+
 def test_render_align_page_includes_heading_source_panel():
     html = render_align_page(lat=48.75, lng=-122.48)
     assert "/setup/heading" in html              # manual + phone post here

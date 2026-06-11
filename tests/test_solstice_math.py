@@ -13,8 +13,19 @@ from sunset_cam.solstice_math import (
     count_sunsets_in_fov,
     compute_sun_azimuth,
     solstice_sunset_azimuths,
+    sunset_arc_azimuths,
     fov_fit,
 )
+
+
+def test_sunset_arc_azimuths_summer_equinox_winter():
+    summer, equinox, winter = sunset_arc_azimuths(lat_deg=48.7519, year=2026)
+    # the sun sets due west (270) at the equinox at any latitude
+    assert abs(equinox - 270.0) < 1.0
+    # N. hemisphere: summer sunset is NW (>270), winter SW (<270)
+    assert summer > equinox > winter
+    assert 300.0 < summer < 315.0
+    assert 230.0 < winter < 245.0
 
 
 # Bellingham, WA

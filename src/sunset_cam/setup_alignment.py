@@ -17,6 +17,7 @@ from typing import Callable, Iterator
 from sunset_cam.orientation_sampler import OrientationSampler
 from sunset_cam.solstice_math import (
     sunset_azimuth_for_day,
+    sunset_arc_azimuths,
     az_to_pixel,
     count_sunsets_in_fov,
 )
@@ -96,6 +97,40 @@ _AIM_SCRIPT = """
       };
     } catch (err) { if (_phoneOut) _phoneOut.textContent = 'compass unavailable'; }
   });
+  function positionArc(heading) {
+    const arc = document.getElementById('ar-arc');
+    if (!arc || !_overlay) return;
+    if (heading == null || isNaN(heading)) {
+      arc.setAttribute('visibility', 'hidden');
+      ['arc-arrow-left', 'arc-arrow-right'].forEach((id) => {
+        const a = document.getElementById(id); if (a) a.setAttribute('visibility', 'hidden');
+      });
+      return;
+    }
+    const vb = _overlay.viewBox.baseVal;
+    const fov = parseFloat(document.body.dataset.fov || '102');
+    const bearings = [
+      ['summer', parseFloat(document.body.dataset.arcSummer)],
+      ['equinox', parseFloat(document.body.dataset.arcEquinox)],
+      ['winter', parseFloat(document.body.dataset.arcWinter)],
+    ];
+    arc.setAttribute('visibility', 'visible');
+    let offLeft = false, offRight = false;
+    for (const [name, az] of bearings) {
+      const delta = ((az - heading + 540) % 360) - 180;   // signed deg, + = to the right
+      const x = vb.width * (0.5 + delta / fov);
+      const inFrame = (x >= 0 && x <= vb.width);
+      const line = document.getElementById('arc-' + name);
+      const label = document.getElementById('arc-' + name + '-label');
+      if (line) { line.setAttribute('x1', x); line.setAttribute('x2', x); line.setAttribute('visibility', inFrame ? 'visible' : 'hidden'); }
+      if (label) { label.setAttribute('x', x); label.setAttribute('visibility', inFrame ? 'visible' : 'hidden'); }
+      if (!inFrame) { if (x < 0) offLeft = true; else offRight = true; }
+    }
+    const al = document.getElementById('arc-arrow-left');
+    const ar = document.getElementById('arc-arrow-right');
+    if (al) al.setAttribute('visibility', offLeft ? 'visible' : 'hidden');
+    if (ar) ar.setAttribute('visibility', offRight ? 'visible' : 'hidden');
+  }
   async function pollHeadingState() {
     try {
       const s = await (await fetch('/setup/state.json', {cache: 'no-store'})).json();
@@ -122,9 +157,14 @@ _AIM_SCRIPT = """
           _sunDot.setAttribute('visibility', 'hidden');
         }
       }
+      positionArc(s.heading_deg !== undefined ? s.heading_deg : null);
     } catch (e) {}
   }
   setInterval(pollHeadingState, 400); pollHeadingState();
+  // static preview hook: render the AR arc at a fixed heading without a server
+  if (document.body.dataset.previewHeading !== undefined) {
+    positionArc(parseFloat(document.body.dataset.previewHeading));
+  }
 </script>
 """
 
@@ -179,6 +219,7 @@ def render_align_page(
     if year is None:
         year = date.today().year
     facing = _facing_data(lat, lng, year)
+    arc_summer, arc_equinox, arc_winter = sunset_arc_azimuths(lat, year)
     marker_groups = "\n".join(
         _marker_group(name, facing[name]) for name in ("east", "west", "both")
     )
@@ -222,6 +263,7 @@ def render_align_page(
     .tilt-banner.warn {{ background: #5a1f1f; color: #ffd6d6; }}
     .tilt-banner.ok {{ background: #1f4a24; color: #d8ffd8; }}
     #tap-marker {{ pointer-events: none; }}
+    .overlay .facing-group {{ display: none !important; }}  /* superseded by the world-locked AR arc */
     .heading-source {{ padding: 8px 20px; max-width: 560px; margin: 0 auto; }}
     .heading-source summary {{ cursor: pointer; color: #9cc4ff; }}
     .hs-row {{ display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }}
@@ -230,7 +272,7 @@ def render_align_page(
     #phone-heading-readout {{ font-size: 13px; color: #ffcc66; }}
   </style>
 </head>
-<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated" data-mount-roll-ref="{mount_roll_ref_deg}" data-mount-pitch-ref="{mount_pitch_ref_deg}" data-level-tol="{level_tol_deg}">
+<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated" data-mount-roll-ref="{mount_roll_ref_deg}" data-mount-pitch-ref="{mount_pitch_ref_deg}" data-level-tol="{level_tol_deg}" data-arc-summer="{arc_summer}" data-arc-equinox="{arc_equinox}" data-arc-winter="{arc_winter}" data-fov="{FOV_DEG}">
   <div class="top-hud">
     <span>roll: <span id="roll-readout" class="readout">—</span></span>
     <span>pitch: <span id="pitch-readout" class="readout">—</span></span>
@@ -252,6 +294,25 @@ def render_align_page(
               stroke="#ff5a5a" stroke-width="5" visibility="hidden" />
       <circle id="sun-dot" cx="0" cy="0" r="26" fill="none"
               stroke="#ffd54a" stroke-width="5" visibility="hidden" />
+      <!-- world-locked AR sunset arc: lines pinned to true bearings, positioned by JS -->
+      <g id="ar-arc" visibility="hidden">
+        <line id="arc-summer" x1="0" x2="0" y1="{HORIZON_Y - 130}" y2="{HORIZON_Y + 130}"
+              stroke="#ffd088" stroke-width="3" stroke-dasharray="10 7" opacity="0.9" />
+        <line id="arc-equinox" x1="0" x2="0" y1="{HORIZON_Y - 130}" y2="{HORIZON_Y + 130}"
+              stroke="#ffcc66" stroke-width="3" opacity="0.95" />
+        <line id="arc-winter" x1="0" x2="0" y1="{HORIZON_Y - 130}" y2="{HORIZON_Y + 130}"
+              stroke="#ffaa55" stroke-width="3" stroke-dasharray="10 7" opacity="0.9" />
+        <text id="arc-summer-label" x="0" y="{HORIZON_Y - 140}" fill="#ffd088"
+              font-size="26" text-anchor="middle" font-family="system-ui">Jun</text>
+        <text id="arc-equinox-label" x="0" y="{HORIZON_Y - 140}" fill="#ffcc66"
+              font-size="26" text-anchor="middle" font-family="system-ui">Equinox</text>
+        <text id="arc-winter-label" x="0" y="{HORIZON_Y - 140}" fill="#ffaa55"
+              font-size="26" text-anchor="middle" font-family="system-ui">Dec</text>
+      </g>
+      <text id="arc-arrow-left" x="44" y="{HORIZON_Y + 16}" fill="#ffcc66"
+            font-size="52" visibility="hidden">&#8592;</text>
+      <text id="arc-arrow-right" x="{SCREEN_W - 44}" y="{HORIZON_Y + 16}" fill="#ffcc66"
+            font-size="52" text-anchor="end" visibility="hidden">&#8594;</text>
     </svg>
   </div>
 

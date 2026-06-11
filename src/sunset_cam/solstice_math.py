@@ -122,6 +122,15 @@ def solstice_sunset_azimuths(lat_deg: float, year: int) -> tuple[float, float]:
     return summer, winter
 
 
+def sunset_arc_azimuths(lat_deg: float, year: int) -> tuple[float, float, float]:
+    """(summer_solstice, equinox, winter_solstice) sunset compass bearings — the
+    three anchor lines of the yearly sunset arc for the AR overlay. The equinox
+    sun sets due west (~270) at every latitude."""
+    summer, winter = solstice_sunset_azimuths(lat_deg, year)
+    equinox = sunset_azimuth_for_day(lat_deg, year, 3, 20)
+    return summer, equinox, winter
+
+
 def fov_fit(
     lat_deg: float, lng_deg: float, center_az: float, fov_deg: float, year: int
 ) -> dict:
