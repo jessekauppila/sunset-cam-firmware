@@ -59,6 +59,8 @@ class AimingService:
         self._supplied_orientation: "tuple[float, float] | None" = None
         # If set, serve the setup-wizard static bundle from this dir at "/".
         self.static_dir = static_dir
+        # How the current heading was set ("sun" | "phone" | "window" | "manual").
+        self._aim_source: "str | None" = None
         self.state = HeadingState(
             hfov_deg=hfov_deg, width=width, level_tol_deg=level_tol_deg,
             mount_roll_ref_deg=mount_roll_ref_deg, mount_pitch_ref_deg=mount_pitch_ref_deg,
@@ -172,6 +174,8 @@ class AimingService:
             # accept a fraction (fx, 0..1, the wizard's native unit) or a raw pixel_x
             px = float(body["fx"]) * self.width if "fx" in body else float(body["pixel_x"])
             ok = self.state.apply_tap(sun_az, px, roll, pitch)
+            if ok:
+                self._aim_source = "sun"
             if not ok:
                 return (json.dumps({"status": "uncalibrated", "error": "level the camera first"}),
                         422, "application/json")
@@ -183,6 +187,8 @@ class AimingService:
                 self._supplied_orientation = (float(body["roll_deg"]), float(body["pitch_deg"]))
             roll, pitch = self._orientation()
             ok = self.state.apply_heading(float(body["heading_deg"]), roll, pitch)
+            if ok:
+                self._aim_source = body.get("source", "manual")
             if not ok:
                 return (json.dumps({"status": "uncalibrated",
                                     "error": "level the camera first"}),
@@ -195,10 +201,14 @@ class AimingService:
                 return (json.dumps({"status": status,
                                     "error": "aim not set — tap the sun first"}),
                         409, "application/json")
+            # live sun-tracking is precise; a latched tap is "sun"; else the set source
+            source = "sun" if status == "tracking" else (self._aim_source or "sun")
             placement = {
                 "azimuth_deg": heading,
                 "tilt_deg": pitch,
                 "roll_deg": roll,
+                "source": source,
+                "coarse": source != "sun",   # phone/window/manual → eligible for sun refine
                 "confirmed_at": self.now_utc_fn().isoformat(),
             }
             self.placement_sink(placement)

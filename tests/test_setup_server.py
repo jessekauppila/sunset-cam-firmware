@@ -233,6 +233,32 @@ def test_set_heading_refused_when_off_level_returns_422():
     body, status, _ = svc.handle_post("/setup/heading", {"heading_deg": 250})
     assert status == 422
 
+def test_confirm_records_phone_source_as_coarse():
+    sink = []
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+        placement_sink=sink.append,
+    )
+    svc.handle_post("/setup/heading", {"heading_deg": 250, "source": "phone"})
+    pl = json.loads(svc.handle_post("/setup/confirm", {})[0])["placement"]
+    assert pl["source"] == "phone" and pl["coarse"] is True
+
+def test_confirm_records_sun_tap_as_precise():
+    sink = []
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (0.2, 1.0),
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        placement_sink=sink.append,
+    )
+    svc.handle_post("/setup/tap", {"pixel_x": 800})
+    pl = json.loads(svc.handle_post("/setup/confirm", {})[0])["placement"]
+    assert pl["source"] == "sun" and pl["coarse"] is False
+
+
 def test_confirm_without_tap_returns_409():
     svc = AimingService(
         lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,

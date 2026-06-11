@@ -1,5 +1,14 @@
 # Cloud-Served HTTPS Setup — Design
 
+> **RESCOPED 2026-06-11** (`2026-06-11-phone-first-onboarding-decision-and-plan.md`):
+> the **frame-relay below is dropped.** The default onboarding is **phone-AR using the
+> phone's own camera** (no lag, no relay). The cloud layer shrinks to a *lightweight*
+> HTTPS page + arc/declination compute + a heading hand-off (record the captured aim as
+> the placement). Use occasional snapshots, never a live `multipart` relay, if a remote
+> operator needs the Pi's view. The "sensing stays on the device" framing still holds,
+> but the *live preview* in the primary flow is the phone's camera, not the Pi's.
+
+
 Date: 2026-06-10
 Repos: `the-sunset-webcam-map` (cloud setup UI + relay) + `sunset-cam-firmware`
 (frame push + directive execution). **Cross-repo; depends on the fleet control
