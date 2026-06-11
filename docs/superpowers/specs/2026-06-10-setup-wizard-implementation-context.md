@@ -65,7 +65,15 @@ declination) % 360`. Bellingham/Seattle declination ≈ **+15.3°E (2026)**. Bes
 declination from lat/lng (WMM model) in the **cloud** and apply it. Never send raw
 magnetic. Document this at the capture site.
 
-## Q3 — Does every method need roll ≈ -90°? (YES)
+## Q3 — Does every method need roll ≈ -90°? (only WITH an MPU)
+
+> **Updated 2026-06-11 — MPU is now optional** (`2026-06-11-mpu-optional-decision.md`).
+> The level gate below applies **only when an MPU is present**. With **no MPU**,
+> `_orientation()` returns the mount reference (assume level), so the gate **passes**
+> and aiming proceeds; tilt comes from the **phone** (mated) at install. Phone
+> onboarding is the primary path and needs no on-device IMU. The text below describes
+> the MPU-present behavior.
+
 
 `apply_tap` **and** `apply_heading` both gate on:
 `abs(roll − mount_roll_ref) ≤ level_tol AND abs(pitch − mount_pitch_ref) ≤ level_tol`,

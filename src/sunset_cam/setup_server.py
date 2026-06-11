@@ -30,7 +30,8 @@ def _default_placement_sink(placement: dict) -> None:
 class AimingService:
     def __init__(
         self, *, lat: float, lng: float, phase: str, hfov_deg: float, width: int,
-        frame_source: Callable[[], bytes], reader: Callable[[], tuple[float, float]],
+        frame_source: Callable[[], bytes],
+        reader: "Callable[[], tuple[float, float]] | None" = None,
         now_utc_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         placement_sink: Callable[[dict], None] = _default_placement_sink,
         mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
@@ -55,10 +56,15 @@ class AimingService:
         self._cam_lock = threading.Lock()
 
     def _orientation(self) -> tuple[float, float]:
+        # MPU is optional. With no IMU (or a transient read error) assume the camera
+        # sits at its mount reference — the install was verified another way (phone),
+        # so the on-device level gate should pass rather than block aiming.
+        if self.reader is None:
+            return (self.mount_roll_ref_deg, self.mount_pitch_ref_deg)
         try:
             return self.reader()
         except Exception:
-            return (0.0, 0.0)
+            return (self.mount_roll_ref_deg, self.mount_pitch_ref_deg)
 
     def _is_level(self, roll: float, pitch: float) -> bool:
         return (abs(roll - self.mount_roll_ref_deg) <= self.level_tol_deg

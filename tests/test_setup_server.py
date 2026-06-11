@@ -126,6 +126,23 @@ def test_set_heading_endpoint_anchors_a_confirmable_heading():
     body2, status2, _ = svc.handle_post("/setup/confirm", {})
     assert status2 == 200
 
+def test_no_imu_assumes_mounted_level_and_accepts_a_heading():
+    # MPU optional: reader=None -> assume the camera sits at its mount reference,
+    # so the level gate passes and a phone/manual heading is accepted.
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+        placement_sink=lambda p: None,
+    )
+    o = json.loads(svc.handle_get("/setup/orientation.json")[0])
+    assert o["roll_deg"] == -90.0 and o["pitch_deg"] == 0.0   # reports the reference
+    body, status, _ = svc.handle_post("/setup/heading", {"heading_deg": 250})
+    assert status == 200
+    assert json.loads(body)["status"] == "tapped"
+
+
 def test_set_heading_refused_when_off_level_returns_422():
     svc = AimingService(
         lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,

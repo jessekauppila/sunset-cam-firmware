@@ -46,7 +46,10 @@ def main() -> None:
         config=config,
     )
 
-    reader = make_orientation_reader(smbus2.SMBus(1))
+    try:
+        reader = make_orientation_reader(smbus2.SMBus(1))
+    except Exception:
+        reader = None   # MPU optional: no IMU -> assume mounted level, skip the gate
     service = AimingService(
         lat=params["lat"], lng=params["lng"], phase=params["phase"],
         hfov_deg=params["hfov"], width=params["width"],
