@@ -211,7 +211,7 @@ def _marker_group(facing: str, data: dict) -> str:
 def render_align_page(
     lat: float, lng: float, year: int | None = None, phase: str = "sunset",
     mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
-    level_tol_deg: float = 15.0,
+    level_tol_deg: float = 15.0, hfov_deg: float = FOV_DEG,
 ) -> str:
     """Render the alignment page HTML. The mount reference (roll/pitch the camera
     reads when correctly mounted) drives the level badge + tilt banner, and must
@@ -272,7 +272,7 @@ def render_align_page(
     #phone-heading-readout {{ font-size: 13px; color: #ffcc66; }}
   </style>
 </head>
-<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated" data-mount-roll-ref="{mount_roll_ref_deg}" data-mount-pitch-ref="{mount_pitch_ref_deg}" data-level-tol="{level_tol_deg}" data-arc-summer="{arc_summer}" data-arc-equinox="{arc_equinox}" data-arc-winter="{arc_winter}" data-fov="{FOV_DEG}">
+<body data-lat="{lat}" data-lng="{lng}" data-current-facing="west" data-phase="{phase}" data-heading-status="uncalibrated" data-mount-roll-ref="{mount_roll_ref_deg}" data-mount-pitch-ref="{mount_pitch_ref_deg}" data-level-tol="{level_tol_deg}" data-arc-summer="{arc_summer}" data-arc-equinox="{arc_equinox}" data-arc-winter="{arc_winter}" data-fov="{hfov_deg}">
   <div class="top-hud">
     <span>roll: <span id="roll-readout" class="readout">—</span></span>
     <span>pitch: <span id="pitch-readout" class="readout">—</span></span>

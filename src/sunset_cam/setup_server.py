@@ -112,6 +112,7 @@ class AimingService:
                 mount_roll_ref_deg=self.mount_roll_ref_deg,
                 mount_pitch_ref_deg=self.mount_pitch_ref_deg,
                 level_tol_deg=self.level_tol_deg,
+                hfov_deg=self.hfov_deg,
             ), 200, "text/html; charset=utf-8")
         if path == "/setup/orientation.json":
             roll, pitch = self._orientation()

@@ -142,8 +142,16 @@ implementation.
 - **MJPEG reload trap:** the wizard's "one `<img>`, set/clear `src` per panel, backoff on
   `onerror`" is exactly right — it fixes the infinite-stream wedge we hit.
 
-## Recommended small firmware fixes (do alongside the wizard)
-1. **Unify FOV** (Q5): `render_align_page` should take `hfov` and emit `data-fov = hfov`.
-2. **Decide 3a leveling** (Q3): either keep the lenient gate or add roll-correction to
-   `pixel_offset_to_angle` — a scoped, testable change if "no-level sun aim" is required.
-3. **Sunrise arc helper** (Q6): `sunrise_arc_azimuths` (mirror of sunset).
+## Recommended small firmware fixes — DONE (2026-06-10)
+1. ✅ **FOV unified** (Q5): `render_align_page(hfov_deg=...)` now emits `data-fov = hfov`,
+   fed from `AimingService.hfov_deg`. Overlay + heading math share one FOV. (Still set
+   the *real* lens FOV — 102 vs the Arducam Wide's ~120 — in config.)
+3. ✅ **`sunrise_arc_azimuths`** (Q6): mirror of the sunset arc (rise = 360 − set), for
+   the east-facing/sunrise wizard path.
+2. **3a leveling — RESOLVED as a decision (no code now):** keep the **lenient ±15° gate**
+   for the sun method in v1. The camera is installed at a fixed mount (roll ≈ -90) and
+   within ±15° near the horizon the roll-induced azimuth error is small (and the sun
+   self-refine corrects residual error). So **soften the wizard 3a copy** from "no
+   leveling required" → "the camera should sit roughly at its mounted position." Full
+   roll-correction in `pixel_offset_to_angle` (project the tap through the roll angle) is
+   a **deferred enhancement**, only needed if truly tilt-free sun-aim becomes a goal.

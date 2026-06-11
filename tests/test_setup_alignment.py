@@ -79,6 +79,12 @@ def test_render_align_page_includes_sun_dot_and_tracking_handling():
     assert "sun_fx" in html                # positions the dot from state.json fractions
 
 
+def test_render_align_page_data_fov_follows_config_hfov():
+    # the AR overlay must use the SAME fov as the heading math, not a hardcoded constant
+    html = render_align_page(lat=48.75, lng=-122.48, hfov_deg=120.0)
+    assert 'data-fov="120.0"' in html
+
+
 def test_render_align_page_includes_world_locked_ar_arc():
     html = render_align_page(lat=48.75, lng=-122.48)
     assert 'id="ar-arc"' in html                 # the AR sunset-arc group

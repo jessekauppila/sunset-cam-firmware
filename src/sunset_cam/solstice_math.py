@@ -131,6 +131,18 @@ def sunset_arc_azimuths(lat_deg: float, year: int) -> tuple[float, float, float]
     return summer, equinox, winter
 
 
+def sunrise_arc_azimuths(lat_deg: float, year: int) -> tuple[float, float, float]:
+    """(summer, equinox, winter) SUNRISE bearings for an east-facing camera — the
+    mirror of the sunset arc across the N-S meridian (rise = 360 - set; equinox
+    rises due east, ~90)."""
+    summer_set, equinox_set, winter_set = sunset_arc_azimuths(lat_deg, year)
+    return (
+        (360.0 - summer_set) % 360.0,
+        (360.0 - equinox_set) % 360.0,
+        (360.0 - winter_set) % 360.0,
+    )
+
+
 def fov_fit(
     lat_deg: float, lng_deg: float, center_az: float, fov_deg: float, year: int
 ) -> dict:

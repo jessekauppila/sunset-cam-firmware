@@ -14,8 +14,17 @@ from sunset_cam.solstice_math import (
     compute_sun_azimuth,
     solstice_sunset_azimuths,
     sunset_arc_azimuths,
+    sunrise_arc_azimuths,
     fov_fit,
 )
+
+
+def test_sunrise_arc_azimuths_mirror_the_sunset_arc():
+    s_rise, e_rise, w_rise = sunrise_arc_azimuths(lat_deg=48.7519, year=2026)
+    assert abs(e_rise - 90.0) < 1.0       # equinox rises due east
+    assert s_rise < e_rise < w_rise       # summer rises NE (<90), winter SE (>90)
+    assert 45.0 < s_rise < 60.0
+    assert 120.0 < w_rise < 135.0
 
 
 def test_sunset_arc_azimuths_summer_equinox_winter():
