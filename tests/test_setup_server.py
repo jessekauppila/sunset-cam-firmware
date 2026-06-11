@@ -81,6 +81,17 @@ def test_tap_accepts_at_configured_mount_reference():
     assert status == 200
     assert json.loads(body)["status"] == "tapped"
 
+def test_state_json_reports_has_mpu():
+    # the wizard keys its level-hint progressive enhancement off state.has_mpu
+    assert json.loads(_service().handle_get("/setup/state.json")[0])["has_mpu"] is True
+    without = AimingService(
+        lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"x", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+    )
+    assert json.loads(without.handle_get("/setup/state.json")[0])["has_mpu"] is False
+
+
 def test_orientation_json_returns_live_roll_pitch():
     body, status, _ = _service().handle_get("/setup/orientation.json")
     assert status == 200

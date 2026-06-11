@@ -105,7 +105,8 @@ class AimingService:
     def _fit_payload(self) -> dict:
         roll, pitch = self._orientation()
         status, heading, sun = self._current_aim(roll, pitch)
-        payload = {"status": status, "roll_deg": roll, "pitch_deg": pitch}
+        payload = {"status": status, "roll_deg": roll, "pitch_deg": pitch,
+                   "has_mpu": self.reader is not None}
         if sun is not None:
             payload["sun_fx"], payload["sun_fy"] = sun
         if heading is not None:
