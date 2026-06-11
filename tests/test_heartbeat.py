@@ -52,4 +52,17 @@ def test_post_heartbeat_posts_with_auth_and_parses():
     assert calls["url"] == "https://www.sunrisesunset.studio/api/cameras/4/heartbeat"
     assert calls["json"] == {"request_placement": True}
     assert calls["headers"]["Authorization"] == "Bearer tok"
-    assert out == {"placement_status": "ready", "lat": 1.0, "lng": 2.0}
+    assert out == {"placement_status": "ready", "lat": 1.0, "lng": 2.0, "directives": []}
+
+
+def test_post_heartbeat_surfaces_directives_from_the_response():
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return {"placement_status": "ready",
+                                "directives": [{"id": "d1", "type": "ship-logs"}]}
+    out = post_heartbeat(
+        {"api_base": "https://x", "camera_id": 4, "device_token": "t"},
+        poster=lambda url, json, headers, timeout: FakeResp(),
+    )
+    assert out["placement_status"] == "ready"
+    assert out["directives"] == [{"id": "d1", "type": "ship-logs"}]

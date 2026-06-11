@@ -1,4 +1,25 @@
-from sunset_cam.supervisor import decide_mode, run_once
+from sunset_cam.supervisor import decide_mode, run_once, run_directives
+
+
+def test_run_directives_executes_new_and_skips_already_seen():
+    seen = set()
+    calls = []
+    def fake_exec(d):
+        calls.append(d["id"])
+        return {"id": d["id"], "status": "done"}
+    out = run_directives(
+        [{"id": "d1", "type": "ship-logs"}, {"id": "d2", "type": "x"}], fake_exec, seen,
+    )
+    assert [r["id"] for r in out] == ["d1", "d2"]
+    assert seen == {"d1", "d2"}
+    # same ids on the next poll are not re-executed (idempotent)
+    out2 = run_directives([{"id": "d1", "type": "ship-logs"}], fake_exec, seen)
+    assert out2 == []
+    assert calls == ["d1", "d2"]
+
+def test_run_directives_tolerates_none_and_empty():
+    assert run_directives(None, lambda d: None, set()) == []
+    assert run_directives([], lambda d: None, set()) == []
 
 def test_decide_mode_maps_status():
     assert decide_mode("awaiting_aim") == "aiming"

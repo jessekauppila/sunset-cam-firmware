@@ -41,4 +41,5 @@ def post_heartbeat(
         body["directive_results"] = results   # report executed control-plane directives
     resp = poster(url, json=body, headers=headers, timeout=timeout_s)
     resp.raise_for_status()
-    return parse_placement(resp.json())
+    response_body = resp.json()
+    return {**parse_placement(response_body), "directives": parse_directives(response_body)}
