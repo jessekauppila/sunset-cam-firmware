@@ -143,6 +143,37 @@ def test_no_imu_assumes_mounted_level_and_accepts_a_heading():
     assert json.loads(body)["status"] == "tapped"
 
 
+def test_heading_with_phone_tilt_records_it_and_gates_on_it():
+    # MPU-less: the mated phone reports the camera's actual tilt; record + gate on it.
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+        placement_sink=lambda p: None,
+    )
+    body, status, _ = svc.handle_post(
+        "/setup/heading", {"heading_deg": 250, "roll_deg": -88.0, "pitch_deg": 2.0})
+    assert status == 200
+    o = json.loads(svc.handle_get("/setup/orientation.json")[0])
+    assert o["roll_deg"] == -88.0 and o["pitch_deg"] == 2.0
+    pl = json.loads(svc.handle_post("/setup/confirm", {})[0])["placement"]
+    assert pl["roll_deg"] == -88.0 and pl["tilt_deg"] == 2.0
+
+def test_heading_with_phone_tilt_too_tilted_is_refused():
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0,
+        placement_sink=lambda p: None,
+    )
+    # phone says the camera is 30deg off the -90 reference -> refuse
+    _, status, _ = svc.handle_post(
+        "/setup/heading", {"heading_deg": 250, "roll_deg": -60.0, "pitch_deg": 0.0})
+    assert status == 422
+
+
 def test_set_heading_refused_when_off_level_returns_422():
     svc = AimingService(
         lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,

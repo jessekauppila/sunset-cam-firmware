@@ -49,6 +49,8 @@ class AimingService:
         self.level_tol_deg = level_tol_deg
         # Optional live sun source (grayscale array | None) for auto-track aiming.
         self.sun_source = sun_source
+        # Tilt the mated phone measured (used when there's no on-device MPU).
+        self._supplied_orientation: "tuple[float, float] | None" = None
         self.state = HeadingState(
             hfov_deg=hfov_deg, width=width, level_tol_deg=level_tol_deg,
             mount_roll_ref_deg=mount_roll_ref_deg, mount_pitch_ref_deg=mount_pitch_ref_deg,
@@ -60,7 +62,8 @@ class AimingService:
         # sits at its mount reference — the install was verified another way (phone),
         # so the on-device level gate should pass rather than block aiming.
         if self.reader is None:
-            return (self.mount_roll_ref_deg, self.mount_pitch_ref_deg)
+            # no on-device IMU: prefer the mated phone's reported tilt, else assume level
+            return self._supplied_orientation or (self.mount_roll_ref_deg, self.mount_pitch_ref_deg)
         try:
             return self.reader()
         except Exception:
@@ -138,6 +141,9 @@ class AimingService:
             return json.dumps(self._fit_payload()), 200, "application/json"
         if path == "/setup/heading":
             # direct heading from a non-sun source (phone compass / manual dial)
+            if "roll_deg" in body and "pitch_deg" in body:
+                # the mated phone reported the camera's tilt — use it when there's no MPU
+                self._supplied_orientation = (float(body["roll_deg"]), float(body["pitch_deg"]))
             roll, pitch = self._orientation()
             ok = self.state.apply_heading(float(body["heading_deg"]), roll, pitch)
             if not ok:

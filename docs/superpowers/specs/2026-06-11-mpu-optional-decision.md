@@ -54,10 +54,11 @@ phone verified it at install, and the sun self-corrects.
 - Net: a unit with **no MPU** runs the full aiming flow; phone/manual headings are
   accepted; `tilt_deg` in the placement defaults to the reference.
 
-## Follow-ups (not yet built)
+## Follow-ups
 
-- **Accept phone-supplied tilt** at `/setup/heading` (or confirm) so the placement
-  records the *actual* tilt the mated phone measured, not just the reference.
+- ✅ **Accept phone-supplied tilt** (done 2026-06-11): `/setup/heading` takes optional
+  `roll_deg`/`pitch_deg`; with no MPU they're recorded in the placement and the gate
+  enforces them — giving the phone method a real level check without an IMU.
 - **v0.3 sun self-calibration** is the MPU-less drift/tilt recovery path — promote it
   from "follow-on" to the default ongoing-verify mechanism.
 - BOM: mark the MPU optional / a pro-tier add-on.
