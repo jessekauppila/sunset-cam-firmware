@@ -81,6 +81,44 @@ def test_tap_accepts_at_configured_mount_reference():
     assert status == 200
     assert json.loads(body)["status"] == "tapped"
 
+def test_arc_azimuths_endpoint_west_and_east():
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"x", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+    )
+    body, status, ctype = svc.handle_get("/setup/arc-azimuths?facing=west")
+    assert status == 200 and "application/json" in ctype
+    d = json.loads(body)
+    assert abs(d["equinox"] - 270.0) < 1.0      # sunset equinox due west
+    assert d["jun"] > d["equinox"] > d["dec"]   # summer NW, winter SW
+    assert "today" in d
+    de = json.loads(svc.handle_get("/setup/arc-azimuths?facing=east")[0])
+    assert abs(de["equinox"] - 90.0) < 1.0      # sunrise equinox due east
+    assert de["jun"] < de["equinox"] < de["dec"]
+
+
+def test_tap_accepts_fractional_fx():
+    body, status, _ = _service().handle_post("/setup/tap", {"fx": 0.5, "fy": 0.5})
+    assert status == 200
+    assert json.loads(body)["status"] in ("tapped", "tracking")
+
+
+def test_serves_wizard_static_files_when_static_dir_set(tmp_path):
+    (tmp_path / "index.html").write_text("<html>wizard</html>")
+    (tmp_path / "api.js").write_text("export const x = 1;")
+    svc = AimingService(
+        lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,
+        frame_source=lambda: b"x", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        static_dir=str(tmp_path),
+    )
+    body, status, ctype = svc.handle_get("/")
+    assert status == 200 and "wizard" in body and "text/html" in ctype
+    jbody, jstatus, jctype = svc.handle_get("/api.js")
+    assert jstatus == 200 and "javascript" in jctype
+
+
 def test_state_json_reports_has_mpu():
     # the wizard keys its level-hint progressive enhancement off state.has_mpu
     assert json.loads(_service().handle_get("/setup/state.json")[0])["has_mpu"] is True

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Align your camera</title>
+<link rel="stylesheet" href="wizard.css">
+</head>
+<body>
+<main class="wiz">
+
+<header class="hud">
+  <span class="hud-left">
+    <span class="hud-title">Align your camera</span>
+    <span class="hud-sub" id="devchip">&#9679; connecting&hellip;</span>
+  </span>
+  <span class="dots" id="dots"><i></i><i></i><i></i><i></i></span>
+</header>
+
+<div class="topbar">
+  <button id="backbtn" class="linkbtn" hidden>&#8249; Back</button>
+  <span id="stepname" class="stepname">Step 1 of 4</span>
+</div>
+
+<!-- Step 1: intent -->
+<section class="step" id="step-1">
+  <h1>Is this a sunrise or sunset camera?</h1>
+  <button class="card fc" data-facing="east">
+    <span class="card-title">Sunrise</span>
+    <span class="card-sub">faces east &middot; 365 sunrises/year</span>
+  </button>
+  <button class="card fc" data-facing="west">
+    <span class="card-title">Sunset</span>
+    <span class="card-sub">faces west &middot; 365 sunsets/year</span>
+  </button>
+</section>
+
+<!-- Step 2: method (phone-first) -->
+<section class="step" id="step-2" hidden>
+  <h1>How should it calibrate?</h1>
+  <button class="card mc rec" data-method="compass" id="card-compass">
+    <span class="badge">recommended</span>
+    <span class="card-title">With your phone</span>
+    <span class="card-sub" id="compass-sub">guides the aim and checks level &mdash; works any time</span>
+  </button>
+  <button class="card mc" data-method="sun">
+    <span class="card-title">By the sun</span>
+    <span class="card-sub">automatic &mdash; sun must be visible to the camera now</span>
+  </button>
+  <button class="card mc" data-method="window">
+    <span class="card-title">Just place it in a window</span>
+    <span class="card-sub" id="winsub">easiest &mdash; the camera fine-tunes itself later</span>
+  </button>
+  <p class="center"><button class="linkbtn" id="manlink">or enter a heading manually</button></p>
+</section>
+
+<!-- Step 3: calibrate -->
+<section class="step" id="step-3" hidden>
+
+  <div id="p-compass" class="panel" hidden>
+    <p class="why">Your phone becomes the measuring tool. Hold the phone upright and press
+    the housing flat against its back &mdash; camera at the top &mdash; so both face the
+    same way. The phone&rsquo;s compass gives the heading and its tilt sensor checks the
+    housing is upright. Markers on your phone&rsquo;s camera view show where the sun
+    <span class="wverb">sets</span> &mdash; today, at the equinox, and at the solstices.</p>
+
+    <div id="c1">
+      <svg viewBox="0 0 400 250" class="diagram" role="img" aria-label="Facing the window: phone held upright in portrait with the window behind it and the sun visible in the window; the phone screen shows the same sun">
+        <text x="200" y="22" class="dim" text-anchor="middle">what you see &mdash; facing the view</text>
+        <rect x="70" y="36" width="260" height="178" rx="4" class="glass"/>
+        <line x1="200" y1="36" x2="200" y2="214" class="mullion"/>
+        <line x1="70" y1="125" x2="330" y2="125" class="mullion"/>
+        <text x="86" y="206" class="dim">window</text>
+        <circle cx="262" cy="84" r="18" class="sun"/>
+        <rect x="158" y="92" width="84" height="148" rx="10" class="phone"/>
+        <rect x="166" y="102" width="68" height="118" rx="4" class="screen"/>
+        <circle cx="214" cy="128" r="9" class="sun"/>
+        <text x="200" y="236" class="phonelabel" text-anchor="middle">your phone, upright &mdash; the sun on its screen</text>
+      </svg>
+      <svg viewBox="0 0 400 170" class="diagram" style="margin-top:8px" role="img" aria-label="Profile view: sun, then window, then the housing held flat against the back of the upright phone, camera at the top facing the sun">
+        <text x="200" y="20" class="dim" text-anchor="middle">from the side</text>
+        <circle cx="48" cy="62" r="14" class="sun"/>
+        <rect x="128" y="32" width="8" height="116" rx="2" class="housing"/>
+        <text x="132" y="162" class="dim" text-anchor="middle">window</text>
+        <rect x="252" y="44" width="14" height="100" rx="3" class="housing"/>
+        <circle cx="259" cy="54" r="7" class="lens"/>
+        <text x="259" y="162" class="dim" text-anchor="middle">camera</text>
+        <rect x="266" y="36" width="24" height="116" rx="5" class="phone"/>
+        <text x="306" y="98" class="phonelabel">phone</text>
+        <text x="306" y="114" class="dim">(you)</text>
+        <line x1="248" y1="54" x2="76" y2="58" class="sunray"/>
+        <path d="M 76 58 L 90 50 L 90 66 Z" class="sunrayhead"/>
+        <text x="160" y="44" class="dim">camera on top, toward the sun</text>
+      </svg>
+      <button class="btn" id="c1ok">They're mated &mdash; start sighting</button>
+    </div>
+
+    <div id="c2" hidden>
+      <div class="preview tall">
+        <video id="arvideo" autoplay playsinline muted></video>
+        <svg class="overlay" id="arsvg" viewBox="0 0 1600 900" preserveAspectRatio="none">
+          <line x1="800" y1="0" x2="800" y2="900" class="centerline"/>
+          <g id="armarks"></g>
+        </svg>
+      </div>
+      <div class="fb dark">Swing until the <b>Equinox</b> marker crosses the center line
+        &mdash; that&rsquo;s where the sun <span class="wverb">sets</span> on the equinox.</div>
+      <div class="fb" id="tiltchip" hidden></div>
+      <button class="btn" id="c2cap">phone heading &mdash;&deg; &mdash; tap to capture</button>
+      <div class="fb" id="c2fb" hidden></div>
+    </div>
+
+    <div id="c3" hidden>
+      <p class="dimtext">Now check the camera&rsquo;s own view &mdash; the markers should sit over open sky:</p>
+      <div class="preview" id="prev-verify">
+        <img class="stream" alt="camera live view">
+        <svg class="overlay" viewBox="0 0 1600 900" preserveAspectRatio="none"><g id="vmarks"></g></svg>
+      </div>
+      <div class="fb info" id="c3fb">aimed <span id="c3h">&mdash;</span>&deg; &mdash; do the markers sit over open sky?</div>
+      <div class="row">
+        <button class="btn" id="c3yes">&#10003; Looks right</button>
+        <button class="btn ghost" id="c3no">Re-sight</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="p-sun" class="panel" hidden>
+    <p class="why">The camera spots the sun in its own view. We know exactly where the
+    sun is in the sky right now, so that one sighting tells us precisely which way the
+    camera faces. The camera should sit roughly at its mounted position.</p>
+    <div class="fb good slim" id="sunlvl" hidden></div>
+    <div class="preview" id="prev-sun">
+      <img class="stream" alt="camera live view">
+      <svg class="overlay" viewBox="0 0 1600 900" preserveAspectRatio="none">
+        <circle id="sunmark" r="40" fill="none" stroke="#ffd54a" stroke-width="8" visibility="hidden"/>
+        <circle id="tapmark" r="44" fill="none" stroke="#ff5a5a" stroke-width="8" visibility="hidden"/>
+      </svg>
+    </div>
+    <div class="fb info" id="sunfb"><span class="spin"></span> &#9728; finding the sun&hellip;</div>
+    <p class="center"><button class="linkbtn" id="taplink" hidden>not finding it? tap the sun in the preview</button></p>
+  </div>
+
+  <div id="p-window" class="panel" hidden>
+    <p class="why">A window facing due <span class="windir">west</span> sees the sun
+    <span class="wverb">set</span> there on the equinox &mdash; and every other
+    <span class="wverb">set</span> of the year falls within the camera&rsquo;s wide view.
+    Set it on the sill and the camera fine-tunes its own aim on the next clear
+    <span class="wevent">sunset</span>.</p>
+    <div class="preview" id="prev-window">
+      <img class="stream" alt="camera live view">
+      <svg class="overlay" viewBox="0 0 1600 900" preserveAspectRatio="none">
+        <line id="lvlline" x1="200" y1="450" x2="1400" y2="450" class="lvlline" visibility="hidden"/>
+      </svg>
+    </div>
+    <div class="fb info" id="wbanner">Set it level on the sill &mdash; eyeballing it is fine.</div>
+    <div class="fb dark">Face it due <b class="windir">west</b> &mdash; where the sun
+      <span class="wverb">sets</span> on the equinox. &#8593; UP marker on top.</div>
+    <button class="btn" id="winok">It's in the window</button>
+    <div class="fb" id="winfb" hidden></div>
+  </div>
+
+  <div id="p-manual" class="panel" hidden>
+    <p class="why">If you already know the compass heading the camera faces (true north),
+    enter it directly. The camera fine-tunes it on the next clear
+    <span class="wevent">sunset</span>.</p>
+    <div class="row">
+      <input id="manin" type="number" inputmode="numeric" min="0" max="359" value="250" aria-label="Heading in degrees">
+      <span class="deg">&deg;</span>
+      <button class="btn" id="manset">Set</button>
+    </div>
+    <div class="fb" id="manfb" hidden></div>
+  </div>
+
+  <button class="btn wide" id="aimnext" disabled>Continue</button>
+</section>
+
+<!-- Step 4: confirm -->
+<section class="step" id="step-4" hidden>
+  <div class="summary">
+    <button class="sumrow" id="r-face"><span>camera for</span><span><span id="sumface">&mdash;</span> &#8250;</span></button>
+    <button class="sumrow" id="r-meth"><span>calibrated by</span><span><span id="summeth">&mdash;</span> &#8250;</span></button>
+    <div class="sumrow static"><span>heading</span><span class="accent" id="sumhead">&mdash;</span></div>
+  </div>
+  <p class="dimtext" id="sumnote" hidden></p>
+  <button class="btn wide" id="confirmbtn">Confirm aim</button>
+  <div class="fb" id="conffb" hidden></div>
+</section>
+
+<div id="mockhost"></div>
+</main>
+<script type="module" src="wizard.js"></script>
+</body>
+</html>

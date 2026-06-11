@@ -12,8 +12,13 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
+import os
+from urllib.parse import urlparse, parse_qs
+
 from sunset_cam.heading import HeadingState, heading_from_tap
-from sunset_cam.solstice_math import compute_sun_azimuth, fov_fit
+from sunset_cam.solstice_math import (
+    compute_sun_azimuth, fov_fit, sunset_arc_azimuths, sunrise_arc_azimuths,
+)
 from sunset_cam.setup_alignment import render_align_page, stream_mjpeg, MJPEG_BOUNDARY
 from sunset_cam.sun_detect import detect_sun_centroid
 
@@ -37,6 +42,7 @@ class AimingService:
         mount_roll_ref_deg: float = 0.0, mount_pitch_ref_deg: float = 0.0,
         level_tol_deg: float = 5.0,
         sun_source: Callable[[], "object | None"] | None = None,
+        static_dir: "str | None" = None,
     ) -> None:
         self.lat, self.lng, self.phase = lat, lng, phase
         self.hfov_deg, self.width = hfov_deg, width
@@ -51,6 +57,8 @@ class AimingService:
         self.sun_source = sun_source
         # Tilt the mated phone measured (used when there's no on-device MPU).
         self._supplied_orientation: "tuple[float, float] | None" = None
+        # If set, serve the setup-wizard static bundle from this dir at "/".
+        self.static_dir = static_dir
         self.state = HeadingState(
             hfov_deg=hfov_deg, width=width, level_tol_deg=level_tol_deg,
             mount_roll_ref_deg=mount_roll_ref_deg, mount_pitch_ref_deg=mount_pitch_ref_deg,
@@ -115,8 +123,31 @@ class AimingService:
             payload.update({"heading_deg": heading, **fit})
         return payload
 
+    _STATIC_FILES = {"/", "/index.html", "/wizard.css", "/wizard.js", "/api.js"}
+    _CTYPES = {"html": "text/html; charset=utf-8", "css": "text/css",
+               "js": "text/javascript", "json": "application/json"}
+
+    def _static(self, route: str):
+        name = "index.html" if route in ("/", "/index.html") else route.lstrip("/")
+        ext = name.rsplit(".", 1)[-1]
+        with open(os.path.join(self.static_dir, name)) as f:
+            return f.read(), 200, self._CTYPES.get(ext, "application/octet-stream")
+
+    def _arc_azimuths(self, facing: str):
+        year = self.now_utc_fn().year
+        jun, equinox, dec = (sunrise_arc_azimuths if facing == "east"
+                             else sunset_arc_azimuths)(self.lat, year)
+        today = compute_sun_azimuth(self.lat, self.lng, self.now_utc_fn())
+        return (json.dumps({"jun": jun, "equinox": equinox, "dec": dec, "today": today}),
+                200, "application/json")
+
     def handle_get(self, path: str):
-        if path in ("/", "/setup/align"):
+        route = path.split("?", 1)[0]
+        # the setup-wizard bundle (when deployed) is served at "/"; falls back to
+        # the legacy render_align_page when no static bundle is configured.
+        if self.static_dir and route in self._STATIC_FILES:
+            return self._static(route)
+        if route in ("/", "/setup/align"):
             return (render_align_page(
                 self.lat, self.lng, phase=self.phase,
                 mount_roll_ref_deg=self.mount_roll_ref_deg,
@@ -124,18 +155,23 @@ class AimingService:
                 level_tol_deg=self.level_tol_deg,
                 hfov_deg=self.hfov_deg,
             ), 200, "text/html; charset=utf-8")
-        if path == "/setup/orientation.json":
+        if route == "/setup/orientation.json":
             roll, pitch = self._orientation()
             return json.dumps({"roll_deg": roll, "pitch_deg": pitch}), 200, "application/json"
-        if path == "/setup/state.json":
+        if route == "/setup/state.json":
             return json.dumps(self._fit_payload()), 200, "application/json"
+        if route == "/setup/arc-azimuths":
+            facing = parse_qs(urlparse(path).query).get("facing", ["west"])[0]
+            return self._arc_azimuths(facing)
         return json.dumps({"error": "not found"}), 404, "application/json"
 
     def handle_post(self, path: str, body: dict):
         if path == "/setup/tap":
             roll, pitch = self._orientation()
             sun_az = compute_sun_azimuth(self.lat, self.lng, self.now_utc_fn())
-            ok = self.state.apply_tap(sun_az, float(body["pixel_x"]), roll, pitch)
+            # accept a fraction (fx, 0..1, the wizard's native unit) or a raw pixel_x
+            px = float(body["fx"]) * self.width if "fx" in body else float(body["pixel_x"])
+            ok = self.state.apply_tap(sun_az, px, roll, pitch)
             if not ok:
                 return (json.dumps({"status": "uncalibrated", "error": "level the camera first"}),
                         422, "application/json")
