@@ -388,16 +388,33 @@ $('manset').onclick = async () => {
 function setHeadingLocal(h, coarse) {
   S.heading = h; S.coarse = coarse; $('aimnext').disabled = false;
 }
-$('aimnext').onclick = () => {
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const compass = (az) => COMPASS[Math.round(((az % 360) / 45)) % 8];
+
+$('aimnext').onclick = async () => {
   const v = VOCAB[S.facing];
   $('sumface').textContent = v.label;
   $('summeth').textContent = MLABEL[S.method];
-  $('sumhead').textContent = (S.coarse ? '≈ ' : '') + S.heading + '°';
+  $('sumhead').textContent = (S.coarse ? '≈ ' : '') + S.heading + '° (' + compass(S.heading) + ')';
+  $('sumcoverlbl').textContent = v.plural + ' / year';
+  $('sumcover').textContent = '…';
   $('sumnote').hidden = !S.coarse;
   if (S.coarse) $('sumnote').textContent =
     `starting at ≈${S.heading}° — the camera fine-tunes itself to about 1° ` +
     `on the next clear ${v.event}`;
+  const rot = $('sumrotate'); rot.hidden = true;
   goto(4);
+  // how many sunsets/year this aim catches, and how many more by rotating
+  try {
+    const cov = await api.getCoverage(S.heading);
+    $('sumcover').textContent = '~' + cov.captured;
+    const more = cov.captured_at_best - cov.captured;
+    rot.hidden = false;
+    rot.textContent = more > 5
+      ? `↻ rotate toward ${compass(cov.best_center_az)} (${Math.round(cov.best_center_az)}°) ` +
+        `to catch ~${cov.captured_at_best} ${v.plural}/year (+${more})`
+      : `✓ about the most this spot can catch (${cov.captured} ${v.plural}/year)`;
+  } catch { $('sumcover').textContent = '—'; }
 };
 $('r-face').onclick = () => goto(1);
 $('r-meth').onclick = () => goto(2);

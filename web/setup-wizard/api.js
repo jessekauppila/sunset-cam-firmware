@@ -71,6 +71,13 @@ function realApi() {
       return r.json();
     },
 
+    // Coverage for a heading: { captured, best_center_az, captured_at_best, fits, ... }.
+    async getCoverage(heading) {
+      const r = await fetch('/setup/coverage?heading=' + Math.round(heading));
+      if (!r.ok) throw new Error('coverage ' + r.status);
+      return r.json();
+    },
+
     // No on-device WMM model; the cloud-served deployment computes this from
     // lat/lng. Local fallback (Bellingham-area, +E).
     async getDeclination() {
@@ -124,6 +131,13 @@ function mockApi() {
     async getArcAzimuths(facing) {
       const e = facing === 'east' ? 90 : 270;
       return { jun: e + 33, equinox: e, dec: e - 33, today: e - 4 };
+    },
+    async getCoverage(h) {
+      const best = 285, peak = 289;                         // mock: best aim ≈ due west
+      const off = Math.min(180, Math.abs(((h - best + 180) % 360) - 180));
+      const captured = Math.max(20, Math.round(peak - off * 3.5));
+      return { fits: off < 8, captured, best_center_az: best, captured_at_best: peak,
+               summer_az: 307, winter_az: 233 };
     },
     async getDeclination() { return 15.3; },
 

@@ -81,6 +81,20 @@ def test_tap_accepts_at_configured_mount_reference():
     assert status == 200
     assert json.loads(body)["status"] == "tapped"
 
+def test_coverage_endpoint_returns_fit_for_a_heading():
+    svc = AimingService(
+        lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=66.0, width=1600,
+        frame_source=lambda: b"x", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+    )
+    d = json.loads(svc.handle_get("/setup/coverage?heading=275")[0])
+    for k in ("captured", "best_center_az", "captured_at_best", "fits"):
+        assert k in d
+    # due west (275) captures at least as many as a NW aim (322) at this latitude
+    nw = json.loads(svc.handle_get("/setup/coverage?heading=322")[0])
+    assert d["captured"] >= nw["captured"]
+
+
 def test_frame_jpg_returns_one_jpeg():
     svc = AimingService(
         lat=48.0, lng=-122.0, phase="sunset", hfov_deg=66.0, width=1600,

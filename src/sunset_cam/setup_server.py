@@ -165,6 +165,11 @@ class AimingService:
         if route == "/setup/arc-azimuths":
             facing = parse_qs(urlparse(path).query).get("facing", ["west"])[0]
             return self._arc_azimuths(facing)
+        if route == "/setup/coverage":
+            # sunsets/year + the best aim, for an arbitrary heading (the confirm screen)
+            heading = float(parse_qs(urlparse(path).query).get("heading", ["0"])[0])
+            fit = fov_fit(self.lat, self.lng, heading, self.hfov_deg, self.now_utc_fn().year)
+            return json.dumps(fit), 200, "application/json"
         if route == "/setup/frame.jpg":
             # single JPEG for snapshot-refresh previews (iOS Safari can't render MJPEG)
             with self._cam_lock:
