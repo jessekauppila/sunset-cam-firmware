@@ -104,20 +104,24 @@ function teardownStep3() {
 // Relayed frames behave like MJPEG from the client's side: ONE <img>, src set
 // only while visible, cleared on leave, onerror → backoff. If the relay turns
 // out to be WS-pushed JPEGs, swap these two functions only.
+// Snapshot-refresh: poll a single JPEG (~1.6 fps). Works on iOS Safari, which
+// will not render an MJPEG multipart stream in an <img>. Cloud: same loop over
+// relayed snapshot frames.
 function attachStream(img) {
-  let delay = 1000;
-  img.onerror = () => {
-    img.src = '';
-    setTimeout(() => {
-      if (img.isConnected && !img.closest('[hidden]'))
-        img.src = api.streamUrl() + '?t=' + Date.now();
-    }, delay);
-    delay = Math.min(delay * 2, 10000);
+  const url = api.frameUrl && api.frameUrl();
+  if (!url) return;                       // mock / no preview → leave placeholder
+  const tick = () => {
+    if (!img.isConnected || img.closest('[hidden]')) return;  // stop when hidden
+    img.src = url + '?t=' + Date.now();
   };
-  img.onload = () => { delay = 1000; };
-  if (api.streamUrl()) img.src = api.streamUrl() + '?t=' + Date.now();
+  tick();
+  img._streamTimer = setInterval(tick, 600);
 }
-function detachStream(img) { img.onerror = null; img.src = ''; }
+function detachStream(img) {
+  if (img._streamTimer) { clearInterval(img._streamTimer); img._streamTimer = null; }
+  img.onerror = null;
+  img.src = '';
+}
 
 // ------------------------------------------------------------- 3a: sun ----
 // No level gate. If the unit happens to have the optional MPU, show a

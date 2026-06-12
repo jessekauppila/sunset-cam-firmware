@@ -28,6 +28,8 @@ function realApi() {
 
     // Pi MJPEG preview (<img>-compatible). Cloud: relayed frames.
     streamUrl: () => '/setup/preview.mjpg',
+    // Single-JPEG snapshot for snapshot-refresh previews (iOS can't render MJPEG).
+    frameUrl: () => '/setup/frame.jpg',
 
     // /setup/state.json → normalize firmware field names (roll_deg→roll) to the
     // wizard's shape { status, has_mpu, roll?, pitch?, sun_fx?, sun_fy?, heading_deg?, fits? }.
@@ -102,6 +104,7 @@ function mockApi() {
     mock: true,
     deviceId: 'mock-cam',
     streamUrl: () => '', // wizard shows the placeholder sky instead
+    frameUrl: () => '',  // mock: no snapshot URL → placeholder sky
 
     async getState() {
       const st = { status: m.detectFail ? 'idle' : 'tracking', has_mpu: m.hasMpu };

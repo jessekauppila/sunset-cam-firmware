@@ -165,6 +165,13 @@ class AimingService:
         if route == "/setup/arc-azimuths":
             facing = parse_qs(urlparse(path).query).get("facing", ["west"])[0]
             return self._arc_azimuths(facing)
+        if route == "/setup/frame.jpg":
+            # single JPEG for snapshot-refresh previews (iOS Safari can't render MJPEG)
+            with self._cam_lock:
+                try:
+                    return self.frame_source(), 200, "image/jpeg"
+                except Exception:
+                    return json.dumps({"error": "camera busy"}), 503, "application/json"
         return json.dumps({"error": "not found"}), 404, "application/json"
 
     def handle_post(self, path: str, body: dict):

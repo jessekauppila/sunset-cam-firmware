@@ -81,6 +81,28 @@ def test_tap_accepts_at_configured_mount_reference():
     assert status == 200
     assert json.loads(body)["status"] == "tapped"
 
+def test_frame_jpg_returns_one_jpeg():
+    svc = AimingService(
+        lat=48.0, lng=-122.0, phase="sunset", hfov_deg=66.0, width=1600,
+        frame_source=lambda: b"\xff\xd8FAKEJPEG\xff\xd9", reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+    )
+    body, status, ctype = svc.handle_get("/setup/frame.jpg")
+    assert status == 200 and ctype == "image/jpeg"
+    assert body == b"\xff\xd8FAKEJPEG\xff\xd9"
+
+def test_frame_jpg_503_when_camera_unavailable():
+    def boom():
+        raise RuntimeError("camera busy")
+    svc = AimingService(
+        lat=48.0, lng=-122.0, phase="sunset", hfov_deg=66.0, width=1600,
+        frame_source=boom, reader=None,
+        now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+    )
+    _, status, _ = svc.handle_get("/setup/frame.jpg")
+    assert status == 503
+
+
 def test_arc_azimuths_endpoint_west_and_east():
     svc = AimingService(
         lat=48.7519, lng=-122.4787, phase="sunset", hfov_deg=120.0, width=1600,
