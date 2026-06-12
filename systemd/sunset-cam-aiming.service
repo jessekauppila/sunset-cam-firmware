@@ -1,0 +1,15 @@
+[Unit]
+Description=Sunset Cam setup-mode aiming server (v0.4 sun-tap)
+After=network-online.target
+Wants=network-online.target
+Conflicts=sunset-cam.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sunset-cam
+ExecStart=/opt/sunset-cam/.venv/bin/python /opt/sunset-cam/scripts/run-setup-server.py --port 8080
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal

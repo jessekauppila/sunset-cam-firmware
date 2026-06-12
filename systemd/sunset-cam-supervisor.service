@@ -1,0 +1,17 @@
+[Unit]
+Description=Sunset Cam device supervisor (AIMING<->ACTIVE)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sunset-cam
+ExecStart=/opt/sunset-cam/.venv/bin/python -m sunset_cam.supervisor
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

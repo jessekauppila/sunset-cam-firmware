@@ -35,6 +35,21 @@ def capture_jpeg() -> bytes:
     return buf.getvalue()
 
 
+def capture_gray_array(stride: int = 8):
+    """Downsampled 2D grayscale (uint8) of the current frame, for sun detection.
+    Strided to keep the Pi Zero 2 W responsive alongside the MJPEG preview.
+    Returns None if the camera or numpy is unavailable (auto-track then no-ops)."""
+    try:
+        import numpy as np  # noqa: WPS433 (lazy; numpy ships with picamera2)
+
+        cam = _get_camera()
+        arr = cam.capture_array("main")          # H x W x {3,4} RGB(A)
+        small = arr[::stride, ::stride, :3]
+        return small.mean(axis=2).astype(np.uint8)
+    except Exception:  # noqa: BLE001 — detection is best-effort
+        return None
+
+
 def shutdown() -> None:
     global _camera
     if _camera is not None:

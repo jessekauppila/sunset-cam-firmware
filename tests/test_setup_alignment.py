@@ -53,6 +53,55 @@ def test_render_align_page_includes_level_badge():
     assert 'id="level-badge"' in html
 
 
+def test_render_align_page_embeds_mount_reference_data_attrs():
+    # frontend banner/badge must enforce the same mount reference the backend gate uses
+    html = render_align_page(lat=48.75, lng=-122.48,
+                             mount_roll_ref_deg=-90.0, mount_pitch_ref_deg=0.0, level_tol_deg=15.0)
+    assert 'data-mount-roll-ref="-90.0"' in html
+    assert 'data-mount-pitch-ref="0.0"' in html
+    assert 'data-level-tol="15.0"' in html
+
+
+def test_render_align_page_includes_tilt_warning_banner():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="tilt-banner"' in html
+
+
+def test_render_align_page_includes_tap_marker_circle():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="tap-marker"' in html
+
+
+def test_render_align_page_includes_sun_dot_and_tracking_handling():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="sun-dot"' in html          # live marker at the detected sun centroid
+    assert "tracking" in html              # the JS handles the auto-track status
+    assert "sun_fx" in html                # positions the dot from state.json fractions
+
+
+def test_render_align_page_data_fov_follows_config_hfov():
+    # the AR overlay must use the SAME fov as the heading math, not a hardcoded constant
+    html = render_align_page(lat=48.75, lng=-122.48, hfov_deg=120.0)
+    assert 'data-fov="120.0"' in html
+
+
+def test_render_align_page_includes_world_locked_ar_arc():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert 'id="ar-arc"' in html                 # the AR sunset-arc group
+    assert 'id="arc-equinox"' in html            # the three bearing lines
+    assert 'data-arc-summer="' in html           # bearings embedded for client-side az->pixel
+    assert "positionArc" in html                 # JS that pins lines to true bearings vs heading
+    assert 'id="arc-arrow-left"' in html         # off-screen edge arrows
+
+
+def test_render_align_page_includes_heading_source_panel():
+    html = render_align_page(lat=48.75, lng=-122.48)
+    assert "/setup/heading" in html              # manual + phone post here
+    assert 'id="manual-heading"' in html         # manual dial input
+    assert 'id="use-phone-compass"' in html      # phone-compass button
+    assert "isSecureContext" in html             # HTTPS feature-gate for the compass API
+
+
 import json
 from sunset_cam.orientation_sampler import OrientationSampler
 from sunset_cam.setup_alignment import render_orientation_json
@@ -144,3 +193,25 @@ def test_stream_mjpeg_swallows_source_exception_and_stops():
     def source() -> bytes:
         raise RuntimeError("glitch")
     assert list(stream_mjpeg(source)) == []
+
+
+def test_align_page_accepts_phase_and_defaults_sunset():
+    html = render_align_page(48.7519, -122.4787, phase="sunrise")
+    assert 'data-phase="sunrise"' in html
+
+
+def test_align_page_posts_tap_to_setup_tap_endpoint():
+    html = render_align_page(48.7519, -122.4787)
+    assert "/setup/tap" in html
+    assert "addEventListener" in html and ("click" in html or "pointerdown" in html)
+
+
+def test_align_page_polls_state_json():
+    html = render_align_page(48.7519, -122.4787)
+    assert "/setup/state.json" in html
+
+
+def test_align_page_has_confirm_button_posting_to_confirm():
+    html = render_align_page(48.7519, -122.4787)
+    assert "/setup/confirm" in html
+    assert "confirm-aim" in html
