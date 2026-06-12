@@ -59,11 +59,14 @@ class HeadingState:
         self._suspect = False
         return True
 
-    def apply_heading(self, heading_deg: float, roll_deg: float, pitch_deg: float) -> bool:
-        """Anchor heading directly from a non-sun source (phone compass / manual dial).
-        Gated on the mount-level check like apply_tap, but no sun pixel is needed."""
-        if (abs(roll_deg - self._roll_ref) > self._level_tol
-                or abs(pitch_deg - self._pitch_ref) > self._level_tol):
+    def apply_heading(self, heading_deg: float, roll_deg: float, pitch_deg: float,
+                      gated: bool = True) -> bool:
+        """Anchor a directly-provided heading (phone compass / manual dial / window).
+        The level gate only applies when `gated` (the phone supplies its own tilt to
+        check against). Window/manual provide the heading outright — the camera's tilt
+        doesn't affect it — so they pass gated=False and are never blocked."""
+        if gated and (abs(roll_deg - self._roll_ref) > self._level_tol
+                      or abs(pitch_deg - self._pitch_ref) > self._level_tol):
             return False
         self._heading = heading_deg % 360.0
         self._tap_roll, self._tap_pitch = roll_deg, pitch_deg

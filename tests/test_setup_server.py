@@ -245,15 +245,19 @@ def test_heading_with_phone_tilt_too_tilted_is_refused():
     assert status == 422
 
 
-def test_set_heading_refused_when_off_level_returns_422():
+def test_window_manual_heading_proceeds_even_off_level():
+    # window/manual provide the heading directly (not measured from the image), so they
+    # must NEVER be blocked by the on-device level gate — always an escape hatch.
     svc = AimingService(
         lat=48.0, lng=-122.0, phase="sunset", hfov_deg=120.0, width=1600,
-        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (40.0, 0.0),  # way off level
+        frame_source=lambda: b"\xff\xd8\xff\xd9", reader=lambda: (40.0, 0.0),  # way off the -90 ref
         now_utc_fn=lambda: datetime(2026, 6, 21, 3, 30, tzinfo=timezone.utc),
+        mount_roll_ref_deg=-90.0, level_tol_deg=15.0,
         placement_sink=lambda p: None,
     )
-    body, status, _ = svc.handle_post("/setup/heading", {"heading_deg": 250})
-    assert status == 422
+    body, status, _ = svc.handle_post("/setup/heading", {"heading_deg": 270, "source": "window"})
+    assert status == 200
+    assert json.loads(body)["status"] == "tapped"
 
 def test_confirm_records_phone_source_as_coarse():
     sink = []

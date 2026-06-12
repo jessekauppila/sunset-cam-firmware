@@ -189,11 +189,14 @@ class AimingService:
             return json.dumps(self._fit_payload()), 200, "application/json"
         if path == "/setup/heading":
             # direct heading from a non-sun source (phone compass / manual dial)
-            if "roll_deg" in body and "pitch_deg" in body:
+            has_tilt = "roll_deg" in body and "pitch_deg" in body
+            if has_tilt:
                 # the mated phone reported the camera's tilt — use it when there's no MPU
                 self._supplied_orientation = (float(body["roll_deg"]), float(body["pitch_deg"]))
             roll, pitch = self._orientation()
-            ok = self.state.apply_heading(float(body["heading_deg"]), roll, pitch)
+            # window/manual provide the heading outright -> never block on level (escape
+            # hatch). Phone provides its own tilt -> gate on it.
+            ok = self.state.apply_heading(float(body["heading_deg"]), roll, pitch, gated=has_tilt)
             if ok:
                 self._aim_source = body.get("source", "manual")
             if not ok:
