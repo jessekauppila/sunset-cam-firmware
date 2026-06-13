@@ -52,8 +52,11 @@ Two entities, cleanly split. This is the spine.
   `webcams.custom_camera_id`); the relocation story needs **1:many**.
 - Fields: `camera_id` (FK), `lat`, `lng`, `heading`, `lens`, capture window,
   `started_at`, `ended_at` (null = active).
-- `state`: `testing` (private to you, discardable — the bench) | `deployed` (public,
-  owns the real sunset archive).
+- `state`: **`testing → deployed → ended`** (the deployment lifecycle).
+  - `testing` — private to you, discardable — the bench bringup.
+  - `deployed` — public, owns the real sunset archive.
+  - `ended` — closed (`ended_at` set, archive frozen/discarded). A deployment reaches
+    `ended` when a new placement commit supersedes it, or on decommission.
 - `heading_source` + `coarse`: phone/window/manual ⇒ coarse (eligible for sun-refine);
   sun ⇒ precise. Firmware already records these.
 - **This is what the map renders. `webcam_id`/the active deployment is what images bind
@@ -61,13 +64,35 @@ Two entities, cleanly split. This is the spine.
 
 ### Rules
 - A camera's **active deployment** = `ended_at IS NULL` (latest wins).
-- **New deployment** when a commissioning lands **> ~100 m** from the active one **and**
-  the installer confirms "new location." Within ~100 m = **re-aim the active deployment in
-  place** (GPS jitter never splits a feed).
+- **A new placement commit auto-ends the prior deployment.** A move **> ~100 m** from
+  the active one opens a **NEW deployment** (`testing|deployed`, fresh archive) and
+  marks the prior `ended`; a move **≤ ~100 m** **re-aims the active deployment in place**
+  (no new deployment — GPS jitter never splits a feed). The installer's "new location"
+  confirm gates the >100 m split.
 - **Bench bringup = deployment #1, `testing`** (your place, never public, discardable).
   **Field install = deployment #2, `deployed`** (the real feed).
-- Moving a camera **closes** the old deployment (`ended_at` set, archive frozen) and
-  **opens** a new one.
+- Moving a camera **closes** the old deployment (`ended_at` set, `state → ended`,
+  archive frozen) and **opens** a new one — the same auto-end rule above.
+
+### Pause vs Decommission
+- **Decommission** = **end the active deployment** (`ended_at` set, `state → ended`;
+  archive frozen/discarded) + an OPTIONAL WiFi-wipe ("clean ship" nicety — a relocated
+  unit auto-re-enters SETUP on association failure anyway, so the wipe is optional).
+- **Pause** = **stop capture, deployment intact** (still active, `ended_at` null),
+  resumable. Unplugging is NOT a decommission — power-off leaves deployment + WiFi
+  intact and resumes on power-up. (See the E↔F integration contract §12 for the cloud
+  action surface and the device-side `wipe_wifi` directive.)
+
+### Bench-test and recommission, mapped to the lifecycle
+- **Bench test** = a `testing` deployment (private, discardable): provision → SETUP →
+  operator onboards to operator WiFi → `testing` deployment → verify capture/post →
+  **decommission** (end the `testing` deployment + optional WiFi-wipe) → ship clean.
+  The same camera then gets a separate `deployed` deployment at the customer site
+  (camera : deployment is 1:many; the bench deployment is `ended`, not carried over).
+- **Recommission / move** = re-run the wizard via the permanent QR. A move >100 m opens
+  a **new** deployment and marks the prior `ended` (fresh archive); ≤100 m re-aims the
+  active one. The device keeps its `device_token` across recommission — only the
+  deployment/placement changes. (E↔F integration contract §11.)
 
 ### Mirrored in firmware config
 `config.json` splits conceptually into:
