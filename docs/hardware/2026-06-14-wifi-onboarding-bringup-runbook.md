@@ -2,6 +2,31 @@
 **Target: bare spare Pi Zero 2 W as camera 2 (camera 1 untouched)**
 Date: 2026-06-14
 
+---
+
+## Production TODO — captive-portal auto-popup (DNS hijack)
+
+The setup AP is now **WPA2-protected** (password `sunsetcam`, printed on the device
+sticker). The current customer flow is:
+
+1. Find `Sunset-Cam-XXXX` in WiFi settings and join it using the sticker password.
+2. When prompted or if no auto-popup appears, open a browser and navigate to
+   **`http://10.42.0.1`** manually.
+3. The browser may show a "not secure" warning — this is **expected** for a local
+   device setup page (no HTTPS on the LAN portal). Proceed past it.
+
+**What is deferred:** the captive-portal **auto-popup** (DNS hijack) that causes
+iOS / Android / Windows to automatically open the portal in the OS captive-network
+assistant — and which also softens the "not secure" UX by using the OS sheet
+instead of a browser. This requires a DNS server that responds to all queries with
+`10.42.0.1`, which is not yet wired into `setup-ap.sh`. When implemented, it will
+eliminate the "browse to 10.42.0.1" step and the "not secure" browser warning.
+
+**Until then:** the sticker must include the WPA2 password and the `http://10.42.0.1`
+address; the portal includes copy explaining the "not secure" warning is expected.
+
+---
+
 This runbook walks through testing the full WiFi-onboarding flow on a bare spare
 Pi Zero 2 W provisioned as **camera 2**. Camera 1 is the production unit; it must
 not be touched at any point during this procedure.
@@ -174,7 +199,7 @@ systemctl status sunset-cam-setup.service
 journalctl -u sunset-cam-setup --no-pager | tail -30
 ```
 
-Expected: `[setup-ap] up: SSID=Sunset-Cam-XXXX (open, shared, gateway 10.42.0.1)` logged,
+Expected: `[setup-ap] up: SSID=Sunset-Cam-XXXX (WPA2, shared, gateway 10.42.0.1)` logged,
 then Flask captive portal listening on port 80.
 
 To start the SETUP service manually for testing (survives SSH drop):
@@ -188,11 +213,13 @@ sudo systemctl start sunset-cam-setup.service
 
 1. On your phone, open WiFi settings.
 2. You should see **`Sunset-Cam-XXXX`** (where XXXX is 4 hex chars from the
-   Pi's MAC). Connect to it. The network is open (no password).
+   Pi's MAC). Connect to it using the **WPA2 password printed on the sticker**
+   (default: `sunsetcam`).
 3. NM shared mode assigns the Pi gateway `10.42.0.1` automatically.
    **DNS auto-popup is not wired yet** — if iOS/Android does not auto-pop a
    captive-portal sheet, open a browser and navigate to `http://10.42.0.1/`
-   manually. (DNS hijack can be added later.)
+   manually. Your browser may show a "not secure" warning — this is expected
+   for a local device setup page; proceed past it. (DNS hijack can be added later.)
 4. Recover from any hang via power-cycle: if creds were already stored, the Pi
    boots straight to ONLINE (supervisor); if not, it re-enters SETUP.
 4. The page should show a dropdown of nearby WiFi networks (from `iwlist scan`)
@@ -226,8 +253,9 @@ Check cloud side: in the admin panel (or via curl) confirm camera 2 appears with
 
 - [ ] Boot dispatcher (`sunset-cam-boot.service`) ran as oneshot and exited 0
 - [ ] Dispatcher chose `setup` (journalctl shows `start sunset-cam-setup.service`)
-- [ ] AP `Sunset-Cam-XXXX` visible on phone
-- [ ] Captive portal sheet appeared within ~10 s (or manual `http://10.42.0.1/` worked)
+- [ ] AP `Sunset-Cam-XXXX` visible on phone (WPA2-locked)
+- [ ] Joined the AP using sticker password (`sunsetcam` or custom)
+- [ ] Captive portal sheet appeared within ~10 s (or manual `http://10.42.0.1/` worked; "not secure" warning expected)
 - [ ] Form showed scanned SSIDs from `iwlist`
 - [ ] Submitting correct credentials joined successfully within 15 s
 - [ ] Setup service stopped; supervisor started

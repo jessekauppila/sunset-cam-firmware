@@ -27,13 +27,27 @@ def test_setup_ap_script_exists():
     )
 
 
-def test_setup_ap_script_is_open_ap_shared_mode():
+def test_setup_ap_script_is_wpa2_ap_shared_mode():
     text = _read("scripts/setup-ap.sh")
     assert "802-11-wireless.mode ap" in text, (
         "setup-ap.sh must set 802-11-wireless.mode ap (NM hotspot mode)"
     )
     assert "ipv4.method shared" in text, (
         "setup-ap.sh must set ipv4.method shared (NM provides DHCP + gateway)"
+    )
+    assert "wpa-psk" in text, (
+        "setup-ap.sh must set 802-11-wireless-security.key-mgmt wpa-psk (WPA2)"
+    )
+    assert "SETUP_AP_PASSWORD" in text, (
+        "setup-ap.sh must reference SETUP_AP_PASSWORD for the WPA2 passphrase"
+    )
+
+
+def test_setup_ap_script_has_default_password_constant():
+    text = _read("scripts/setup-ap.sh")
+    # Default password must be in the script and >= 8 chars (WPA2 minimum)
+    assert 'SETUP_AP_PASSWORD="${SETUP_AP_PASSWORD:-sunsetcam}"' in text, (
+        "setup-ap.sh must define SETUP_AP_PASSWORD with default 'sunsetcam'"
     )
 
 

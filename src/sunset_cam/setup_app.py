@@ -38,10 +38,19 @@ _INDEX_HTML = """\
              font-size: 1rem; background: #0070f3; color: #fff; border: none;
              border-radius: 4px; cursor: pointer; }
     .error { color: #c00; margin-top: .5rem; }
+    .info  { background: #f0f4ff; border: 1px solid #c0cfe8; border-radius: 6px;
+             padding: .75rem 1rem; margin-top: 1rem; font-size: .9rem;
+             color: #3a4a6b; line-height: 1.5; }
   </style>
 </head>
 <body>
   <h1>Connect Camera to WiFi</h1>
+  <div class="info">
+    &#x1F512; This is a private, direct connection to your camera &mdash; your
+    password is sent only to the camera over an encrypted setup network, never
+    to the internet. Your browser may warn that the page is &ldquo;not
+    secure&rdquo;; that&rsquo;s expected for local device setup.
+  </div>
   {% if error %}
     <p class="error">{{ error }}</p>
   {% endif %}
@@ -57,7 +66,8 @@ _INDEX_HTML = """\
       <option value="">-- enter manually --</option>
     </select>
     <label for="psk">Password</label>
-    <input type="password" id="psk" name="psk" autocomplete="current-password">
+    <input type="password" id="psk" name="psk" autocomplete="current-password"
+           minlength="8">
     <button type="submit">Connect</button>
   </form>
 </body>
@@ -155,6 +165,15 @@ def create_app(
     def connect():
         ssid = request.form.get("ssid", "")
         psk = request.form.get("psk", "")
+        # Server-side password-length check: non-empty PSKs must be >= 8 chars
+        # (WPA2 minimum). Empty PSK = open network, which is still allowed.
+        if psk and len(psk) < 8:
+            networks = scan_fn()
+            body = render_template_string(
+                _INDEX_HTML, networks=networks, selected=ssid,
+                error="WiFi password must be at least 8 characters.",
+            )
+            return body, 400
         try:
             wifi_service.connect(ssid, psk)
         except ValueError as exc:

@@ -89,29 +89,29 @@ def test_get_index_has_form(client):
 # ---------------------------------------------------------------------------
 
 def test_post_connect_success_returns_200(client, fake_wifi):
-    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
+    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "validpassword"})
     assert rv.status_code == 200
 
 
 def test_post_connect_calls_connect_with_ssid_and_psk(client, fake_wifi):
-    client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
-    assert fake_wifi.connected == ("HomeNetwork", "pw")
+    client.post("/connect", data={"ssid": "HomeNetwork", "psk": "validpassword"})
+    assert fake_wifi.connected == ("HomeNetwork", "validpassword")
 
 
 def test_post_connect_success_page_mentions_ssid(client, fake_wifi):
-    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
+    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "validpassword"})
     assert b"HomeNetwork" in rv.data
 
 
 def test_post_connect_success_calls_reboot_fn(client, fake_wifi, fake_reboot):
     """After a successful save, reboot_fn must be called."""
-    client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
+    client.post("/connect", data={"ssid": "HomeNetwork", "psk": "validpassword"})
     assert fake_reboot.called is True
 
 
 def test_post_connect_success_page_mentions_reboot(client, fake_wifi):
     """Success page copy should mention reboot so user knows what to expect."""
-    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
+    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "validpassword"})
     body = rv.data.lower()
     assert b"reboot" in body or b"restart" in body
 
@@ -121,24 +121,24 @@ def test_post_connect_success_page_mentions_reboot(client, fake_wifi):
 # ---------------------------------------------------------------------------
 
 def test_post_connect_empty_ssid_returns_400(client, fake_wifi):
-    rv = client.post("/connect", data={"ssid": "", "psk": "pw"})
+    rv = client.post("/connect", data={"ssid": "", "psk": "validpassword"})
     assert rv.status_code == 400
 
 
 def test_post_connect_empty_ssid_connect_not_called(client, fake_wifi):
-    client.post("/connect", data={"ssid": "", "psk": "pw"})
+    client.post("/connect", data={"ssid": "", "psk": "validpassword"})
     assert fake_wifi.connected is None
 
 
 def test_post_connect_empty_ssid_shows_error(client, fake_wifi):
-    rv = client.post("/connect", data={"ssid": "", "psk": "pw"})
+    rv = client.post("/connect", data={"ssid": "", "psk": "validpassword"})
     # Should re-render the form with an error message
     assert b"<form" in rv.data
 
 
 def test_post_connect_empty_ssid_reboot_not_called(client, fake_wifi, fake_reboot):
     """On validation failure, reboot_fn must NOT be called."""
-    client.post("/connect", data={"ssid": "", "psk": "pw"})
+    client.post("/connect", data={"ssid": "", "psk": "validpassword"})
     assert fake_reboot.called is False
 
 
@@ -163,3 +163,101 @@ def test_root_itself_does_not_redirect(client):
     """GET / must render the page, not loop-redirect."""
     rv = client.get("/")
     assert rv.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /connect — password-length validation (>=8 chars for WPA2)
+# ---------------------------------------------------------------------------
+
+def test_post_connect_short_psk_returns_400(fake_wifi, fake_reboot):
+    """A non-empty PSK shorter than 8 chars must be rejected with HTTP 400."""
+    app = create_app(
+        scan_fn=make_scan_fn("HomeNetwork"),
+        wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
+    )
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        rv = c.post("/connect", data={"ssid": "HomeNetwork", "psk": "1234"})
+    assert rv.status_code == 400
+
+
+def test_post_connect_short_psk_connect_not_called(fake_wifi, fake_reboot):
+    """connect() must NOT be called when PSK is too short."""
+    app = create_app(
+        scan_fn=make_scan_fn("HomeNetwork"),
+        wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
+    )
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        c.post("/connect", data={"ssid": "HomeNetwork", "psk": "short"})
+    assert fake_wifi.connected is None
+
+
+def test_post_connect_short_psk_reboot_not_called(fake_wifi, fake_reboot):
+    """reboot_fn must NOT be called when PSK is too short."""
+    app = create_app(
+        scan_fn=make_scan_fn("HomeNetwork"),
+        wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
+    )
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        c.post("/connect", data={"ssid": "HomeNetwork", "psk": "short"})
+    assert fake_reboot.called is False
+
+
+def test_post_connect_short_psk_shows_form_with_error(fake_wifi, fake_reboot):
+    """On short-PSK rejection, form must be re-rendered with an error message."""
+    app = create_app(
+        scan_fn=make_scan_fn("HomeNetwork"),
+        wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
+    )
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        rv = c.post("/connect", data={"ssid": "HomeNetwork", "psk": "abc"})
+    assert b"<form" in rv.data
+    assert b"8" in rv.data  # error mentions 8-char minimum
+
+
+def test_post_connect_empty_psk_open_network_proceeds(fake_wifi, fake_reboot):
+    """Empty PSK = open network — must still proceed (connect called, reboot called)."""
+    app = create_app(
+        scan_fn=make_scan_fn("OpenNet"),
+        wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
+    )
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        rv = c.post("/connect", data={"ssid": "OpenNet", "psk": ""})
+    assert fake_wifi.connected == ("OpenNet", "")
+    assert fake_reboot.called is True
+    assert rv.status_code == 200
+
+
+def test_post_connect_exactly_8_char_psk_proceeds(fake_wifi, fake_reboot):
+    """A PSK of exactly 8 chars must be accepted (WPA2 minimum)."""
+    app = create_app(
+        scan_fn=make_scan_fn("HomeNetwork"),
+        wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
+    )
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        rv = c.post("/connect", data={"ssid": "HomeNetwork", "psk": "12345678"})
+    assert rv.status_code == 200
+    assert fake_wifi.connected == ("HomeNetwork", "12345678")
+
+
+# ---------------------------------------------------------------------------
+# GET / — reassuring copy present
+# ---------------------------------------------------------------------------
+
+def test_get_index_has_reassuring_copy(client):
+    """The index page must include a security-reassurance notice."""
+    rv = client.get("/")
+    body = rv.data.lower()
+    # Key phrases from the reassuring paragraph
+    assert b"private" in body or b"encrypted" in body or b"direct" in body

@@ -1,6 +1,6 @@
 """TDD tests for sticker.py — setup_url() (pure) and render_sticker() (I/O)."""
 import pytest
-from sunset_cam.sticker import render_sticker, setup_url
+from sunset_cam.sticker import SETUP_AP_PASSWORD, render_sticker, setup_url
 
 
 # ---------------------------------------------------------------------------
@@ -67,3 +67,29 @@ def test_render_sticker_accepts_different_claim_codes(tmp_path):
         out = tmp_path / f"sticker-{code}.png"
         render_sticker(code, "https://sunset.cam", str(out))
         assert out.exists() and out.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# SETUP_AP_PASSWORD constant — keeps sticker in sync with setup-ap.sh
+# ---------------------------------------------------------------------------
+
+
+def test_sticker_module_exposes_setup_ap_password():
+    """sticker.py must export SETUP_AP_PASSWORD so provisioning can print it."""
+    assert isinstance(SETUP_AP_PASSWORD, str), "SETUP_AP_PASSWORD must be a string"
+    assert len(SETUP_AP_PASSWORD) >= 8, (
+        "SETUP_AP_PASSWORD must be >= 8 chars (WPA2 minimum)"
+    )
+
+
+def test_sticker_setup_ap_password_matches_default():
+    """The default must match setup-ap.sh's SETUP_AP_PASSWORD default."""
+    assert SETUP_AP_PASSWORD == "sunsetcam"
+
+
+def test_render_sticker_still_produces_valid_png_with_password(tmp_path):
+    """render_sticker must still produce a valid PNG after the password line is added."""
+    out = tmp_path / "sticker_with_pw.png"
+    render_sticker("SUNSET-AAAA-BBBB", "https://sunset.cam", str(out))
+    header = out.read_bytes()[:8]
+    assert header == b"\x89PNG\r\n\x1a\n", f"Not a valid PNG header: {header!r}"
