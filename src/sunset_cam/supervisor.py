@@ -11,7 +11,7 @@ from typing import Callable
 import requests
 
 from sunset_cam.boot import wipe_wifi_credentials
-from sunset_cam.config import load_config
+from sunset_cam.config import load_identity
 from sunset_cam.heartbeat import post_heartbeat
 from sunset_cam.placement_consume import decide_placement
 from sunset_cam.register import post_register
@@ -109,7 +109,9 @@ def run_directives(directives, execute_fn: Callable[[dict], dict], seen_ids: set
 def main(interval_s: float = 30.0) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s supervisor %(message)s")
     log = logging.getLogger("supervisor")
-    config = load_config(CONFIG_PATH)
+    # Identity-only load: the supervisor must come ONLINE (register + heartbeat)
+    # on a freshly-provisioned, unplaced device that has no capture config yet.
+    config = load_identity(CONFIG_PATH)
     controller = SystemctlController()
     log.info("supervisor up; camera_id=%s", config["camera_id"])
     seen_ids: set = set()

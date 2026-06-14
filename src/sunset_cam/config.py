@@ -35,6 +35,15 @@ _REQUIRED = (
     "capture_interval_s",
 )
 
+# The minimal identity a device needs to come ONLINE (register + heartbeat). A
+# freshly-provisioned, unplaced unit only has these; it gets the capture config
+# (phase/window) after placement, before it goes ACTIVE.
+_IDENTITY_REQUIRED = (
+    "camera_id",
+    "device_token",
+    "api_base",
+)
+
 
 def _parse_iso(value: str) -> datetime:
     # Python's fromisoformat accepts '+00:00' but not 'Z' (until 3.11+ does).
@@ -66,3 +75,28 @@ def load_config(path: str | Path) -> Config:
 
     raw.setdefault("log_level", "INFO")
     return raw  # type: ignore[return-value]
+
+
+def load_identity(path: str | Path) -> dict:
+    """Load the minimal identity for the ONLINE/IDLE loop (register + heartbeat).
+
+    Unlike :func:`load_config`, this does NOT require the capture config
+    (phase/window/capture_window) — a provisioned-but-unplaced device only has
+    identity and must come online to *request* its placement. The supervisor uses
+    this; the capture loop (``sunset_cam.main``) keeps the strict ``load_config``.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise ConfigError(f"config not found: {p}")
+
+    try:
+        raw = json.loads(p.read_text())
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"config is not valid JSON: {exc}") from exc
+
+    for key in _IDENTITY_REQUIRED:
+        if key not in raw:
+            raise ConfigError(f"missing required identity key: {key}")
+
+    raw.setdefault("log_level", "INFO")
+    return raw
