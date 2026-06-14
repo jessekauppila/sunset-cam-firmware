@@ -21,16 +21,16 @@ not be touched at any point during this procedure.
 
 ## Known items that need tuning on the Pi
 
-The following are flagged in the config files and may need adjustment:
+The AP is now brought up via **NetworkManager's native hotspot** (`scripts/setup-ap.sh`
+using `nmcli` shared mode). NM handles DHCP and the gateway at `10.42.0.1` automatically
+— no separate hostapd or dnsmasq needed.
 
 | Item | Default | Where to change |
 |---|---|---|
-| wlan0 interface name | `wlan0` | `config/hostapd.conf`, `config/dnsmasq-setup.conf`, `systemd/sunset-cam-setup.service` ExecStartPre |
-| AP IP address | `10.42.0.1/24` | `systemd/sunset-cam-setup.service` ExecStartPre + `config/dnsmasq-setup.conf` dhcp-option + `src/sunset_cam/setup_app.py` catch-all redirect |
-| DHCP subnet | `10.42.0.50-150/24` | `config/dnsmasq-setup.conf` |
-| Channel | `6` | `config/hostapd.conf` |
-| dhcpcd vs NetworkManager | dhcpcd (Pi OS Lite default) | If NM is active, add `Conflicts=NetworkManager.service` in `sunset-cam-setup.service`; add `interface wlan0 / nohook wpa_supplicant` in `/etc/dhcpcd.conf` to stop dhcpcd from fighting the AP |
-| hostapd masked | systemd may mask it at install | Run `sudo systemctl unmask hostapd` before first `systemctl enable hostapd` test |
+| wlan0 interface name | `wlan0` | `scripts/setup-ap.sh` (`SETUP_AP_IFACE` env var or edit `IFACE=`) |
+| AP IP address | `10.42.0.1` (NM assigns it) | NM shared mode always uses `10.42.0.1`; if you must change it, also update `src/sunset_cam/setup_app.py` catch-all redirect |
+| WiFi band | `bg` (2.4 GHz) | `scripts/setup-ap.sh` — change `802-11-wireless.band bg` to `a` for 5 GHz |
+| DNS auto-popup (captive sheet) | Not wired yet — manual browse | Browse to `http://10.42.0.1` for now; DNS hijack can be added later |
 
 ---
 
@@ -91,19 +91,19 @@ Then on the Pi:
 
 ```bash
 # 3a. Update apt and install system deps
+# NetworkManager hotspot mode is used for the AP — no hostapd/dnsmasq needed.
 sudo apt update
-sudo apt install -y git python3-venv hostapd dnsmasq wpasupplicant \
+sudo apt install -y git python3-venv wpasupplicant \
                     python3-picamera2 i2c-tools
 
-# 3b. hostapd is masked on Pi OS by default — unmask it
-sudo systemctl unmask hostapd
+# 3b. Confirm NetworkManager is active (Pi OS Bookworm with NM — should be)
+sudo systemctl is-active NetworkManager
 
-# 3c. Disable the hostapd and dnsmasq system services so they are NOT started
-#     at boot on their own; sunset-cam-setup.service drives them on demand.
-sudo systemctl disable hostapd dnsmasq
-
-# 3d. Clone the firmware repo
+# 3c. Clone the firmware repo
 sudo git clone https://github.com/<your-org>/sunset-cam-firmware /opt/sunset-cam
+
+# 3d. Confirm setup-ap.sh is executable (git should preserve the bit)
+sudo chmod +x /opt/sunset-cam/scripts/setup-ap.sh
 
 # 3e. Create venv and install firmware
 cd /opt/sunset-cam
@@ -174,7 +174,13 @@ systemctl status sunset-cam-setup.service
 journalctl -u sunset-cam-setup --no-pager | tail -30
 ```
 
-Expected: hostapd started, dnsmasq started, Flask captive portal listening.
+Expected: `[setup-ap] up: SSID=Sunset-Cam-XXXX (open, shared, gateway 10.42.0.1)` logged,
+then Flask captive portal listening on port 80.
+
+To start the SETUP service manually for testing (survives SSH drop):
+```bash
+sudo systemctl start sunset-cam-setup.service
+```
 
 ---
 
@@ -183,9 +189,12 @@ Expected: hostapd started, dnsmasq started, Flask captive portal listening.
 1. On your phone, open WiFi settings.
 2. You should see **`Sunset-Cam-XXXX`** (where XXXX is 4 hex chars from the
    Pi's MAC). Connect to it. The network is open (no password).
-3. iOS or Android should show a "Sign in to network" / captive-portal sheet
-   within ~5 seconds. If it does not, open any browser and navigate to
-   `http://10.42.0.1/` manually.
+3. NM shared mode assigns the Pi gateway `10.42.0.1` automatically.
+   **DNS auto-popup is not wired yet** — if iOS/Android does not auto-pop a
+   captive-portal sheet, open a browser and navigate to `http://10.42.0.1/`
+   manually. (DNS hijack can be added later.)
+4. Recover from any hang via power-cycle: if creds were already stored, the Pi
+   boots straight to ONLINE (supervisor); if not, it re-enters SETUP.
 4. The page should show a dropdown of nearby WiFi networks (from `iwlist scan`)
    and a password field.
 5. Select your home WiFi network, enter the password, tap Connect.
@@ -235,13 +244,14 @@ journalctl -u sunset-cam-boot -u sunset-cam-setup -u sunset-cam-supervisor \
 # Live tail during phone test:
 journalctl -u sunset-cam-setup -f
 
-# Check if hostapd actually started:
-journalctl -u sunset-cam-setup | grep -i hostapd
+# Check if setup-ap.sh brought up the NM hotspot:
+journalctl -u sunset-cam-setup | grep "setup-ap"
 
-# Check dnsmasq:
-journalctl -u sunset-cam-setup | grep -i dnsmasq
+# Check NM connection state:
+nmcli connection show sunset-setup-ap
+nmcli device status
 
-# Check if AP IP was assigned:
+# Check AP IP was assigned (NM shared mode → 10.42.0.1):
 ip addr show wlan0
 ```
 
@@ -251,10 +261,10 @@ ip addr show wlan0
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| AP does not appear | hostapd failed to start | `journalctl -u sunset-cam-setup \| grep -i hostapd`; check if hostapd is still masked (`systemctl status hostapd`) |
-| AP visible but captive sheet never pops | dnsmasq not running or wrong interface | Check `address=/#/10.42.0.1` in dnsmasq-setup.conf; `journalctl \| grep dnsmasq` |
-| Form loads but no SSIDs | `iwlist scan` failed | Pi must be in AP mode AND have radio; `iwlist wlan0 scan` may need the interface to not be in managed mode |
+| AP does not appear | NM hotspot failed to start | `journalctl -u sunset-cam-setup \| grep setup-ap`; check `nmcli device status`; confirm NM is active: `systemctl status NetworkManager` |
+| `nmcli connection add` fails | NM not running or wlan0 busy | `sudo systemctl start NetworkManager`; ensure no other process holds wlan0 |
+| AP visible but captive sheet never pops | DNS hijack not wired (by design for now) | Browse to `http://10.42.0.1/` manually in a browser on the phone |
+| Form loads but no SSIDs | `iwlist scan` failed | In NM shared AP mode the radio is occupied; `nmcli device wifi list` may work instead; `iwlist wlan0 scan` can fail when in AP mode |
 | Submit says "could not connect" | Wrong password OR radio can't see that SSID | Verify SSID name is exact; try again |
-| Supervisor does not start after join | wpa_supplicant did not associate | Check `/etc/wpa_supplicant/wpa_supplicant.conf` was written; `wpa_cli status` |
-| Boot dispatcher starts supervisor even with no creds | Stale creds in wpa_supplicant.conf from imager | `grep "network={" /etc/wpa_supplicant/wpa_supplicant.conf` and delete the block |
-| `dhcpcd` fights the AP IP | dhcpcd manages wlan0 | Add to `/etc/dhcpcd.conf`: `interface wlan0` + `nohook wpa_supplicant`; reboot |
+| Supervisor does not start after join | NM did not save/apply creds | Check `nmcli connection show`; `journalctl -u NetworkManager` |
+| Boot dispatcher starts supervisor even with no creds | Stale NM connection profile | `nmcli connection show` and delete any home-wifi profile; reboot |

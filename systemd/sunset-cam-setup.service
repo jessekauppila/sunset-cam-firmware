@@ -1,44 +1,23 @@
 [Unit]
 Description=Sunset Cam WiFi captive-portal setup (SETUP mode)
-# ⚠️  HARDWARE-GATED: bring-up details that may need Pi tuning:
-#   - network-pre.target ordering: correct for dhcpcd-managed interfaces;
-#     if using NetworkManager, use network.target instead and add
-#     "NetworkManager.service" to Conflicts= if it fights wlan0.
-#   - hostapd may need to be unmasked first:
-#       sudo systemctl unmask hostapd
-#   - wlan0 static IP: if dhcpcd re-assigns wlan0 after ExecStartPre,
-#     add a dhcpcd.conf stanza: interface wlan0 / nohook wpa_supplicant
-After=network-pre.target
-Conflicts=sunset-cam.service sunset-cam-supervisor.service sunset-cam-aiming.service
+# NetworkManager-native hotspot: setup-ap.sh creates an open shared-mode AP
+# via nmcli; NM provides DHCP + gateway at 10.42.0.1 automatically.
+After=network.target NetworkManager.service
+Conflicts=sunset-cam-supervisor.service sunset-cam.service
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/sunset-cam
 
-# --- ExecStartPre sequence ---
-# 1. Derive the 4-hex-char MAC suffix and write a patched hostapd.conf
-#    to /run/ (never mutates the versioned config/hostapd.conf).
-ExecStartPre=/bin/sh -c 'MAC=$(cat /sys/class/net/wlan0/address | tr -d ":" | tail -c 5 | head -c 4); sed "s/Sunset-Cam-XXXX/Sunset-Cam-${MAC}/" /opt/sunset-cam/config/hostapd.conf > /run/hostapd-setup.conf'
+# Bring up the open NM hotspot (open AP, shared mode, gateway 10.42.0.1).
+ExecStartPre=/opt/sunset-cam/scripts/setup-ap.sh up
 
-# 2. Assign the static AP IP to wlan0 (captive portal address).
-#    10.42.0.1 must match dhcp-option=3/6 in dnsmasq-setup.conf and
-#    the Flask catch-all redirect in setup_app.py.
-ExecStartPre=/sbin/ip addr add 10.42.0.1/24 dev wlan0 || true
-
-# 3. Start hostapd in background using the patched conf.
-ExecStartPre=/usr/sbin/hostapd -B /run/hostapd-setup.conf
-
-# 4. Start dnsmasq with the setup-only config (DNS hijack + DHCP).
-ExecStartPre=/usr/sbin/dnsmasq -C /opt/sunset-cam/config/dnsmasq-setup.conf
-
-# --- Main process: Flask captive-portal on port 80 ---
+# Main process: Flask captive-portal on port 80.
 ExecStart=/opt/sunset-cam/.venv/bin/python /opt/sunset-cam/scripts/run-setup-app.py
 
-# --- Cleanup on stop ---
-ExecStopPost=-/usr/bin/pkill -x hostapd
-ExecStopPost=-/usr/bin/pkill -x dnsmasq
-ExecStopPost=-/sbin/ip addr del 10.42.0.1/24 dev wlan0
+# Tear down the hotspot when the portal exits or is stopped.
+ExecStopPost=/opt/sunset-cam/scripts/setup-ap.sh down
 
 Restart=on-failure
 RestartSec=5

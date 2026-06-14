@@ -1,11 +1,11 @@
 """Content-sanity tests for hardware-gated SETUP-stack config + systemd files.
 
-These tests do NOT test runtime behavior (that requires a real Pi with hostapd,
-dnsmasq, and a radio). They verify that key lines are present in each file so
+These tests do NOT test runtime behavior (that requires a real Pi with a radio
+and NetworkManager). They verify that key lines are present in each file so
 that a typo or accidental deletion is caught before hardware bring-up.
 
-⚠️  HARDWARE-GATED: the actual AP, DHCP, DNS, and Flask behavior must be
-validated manually on a Pi Zero 2 W. See:
+⚠️  HARDWARE-GATED: the actual AP, DHCP, and Flask behavior must be validated
+manually on a Pi Zero 2 W. See:
   docs/hardware/2026-06-14-wifi-onboarding-bringup-runbook.md
 """
 from __future__ import annotations
@@ -19,45 +19,48 @@ def _read(rel: str) -> str:
     return (ROOT / rel).read_text()
 
 
-# ── hostapd.conf ────────────────────────────────────────────────────────────
+# ── scripts/setup-ap.sh ─────────────────────────────────────────────────────
 
-def test_hostapd_conf_has_wlan0_interface():
-    assert "interface=wlan0" in _read("config/hostapd.conf")
-
-
-def test_hostapd_conf_has_ssid_template_with_xxxx_placeholder():
-    text = _read("config/hostapd.conf")
-    # ExecStartPre in sunset-cam-setup.service substitutes XXXX at boot.
-    assert "ssid=Sunset-Cam-XXXX" in text
-
-
-def test_hostapd_conf_is_open_network_no_wpa_key():
-    text = _read("config/hostapd.conf")
-    # Must be an OPEN AP: no active wpa= directive. Comments are fine.
-    active_lines = [l for l in text.splitlines() if not l.strip().startswith("#")]
-    assert not any(l.startswith("wpa=") for l in active_lines), (
-        "hostapd.conf must NOT have an active wpa= line — this AP must be open"
+def test_setup_ap_script_exists():
+    assert (ROOT / "scripts/setup-ap.sh").exists(), (
+        "scripts/setup-ap.sh must exist — it is the NM-native AP bring-up script"
     )
 
 
-# ── dnsmasq-setup.conf ──────────────────────────────────────────────────────
-
-def test_dnsmasq_conf_has_wlan0_interface():
-    assert "interface=wlan0" in _read("config/dnsmasq-setup.conf")
-
-
-def test_dnsmasq_conf_has_dhcp_range_in_expected_subnet():
-    # dhcp-range must be in the 10.42.0.x/24 subnet matching the AP IP.
-    assert "dhcp-range=10.42.0.50,10.42.0.150" in _read("config/dnsmasq-setup.conf")
-
-
-def test_dnsmasq_conf_hijacks_all_dns_to_ap_ip():
-    # address=/#/10.42.0.1 resolves every query to the device so iOS/Android
-    # captive-portal probes automatically pop the browser sheet.
-    assert "address=/#/10.42.0.1" in _read("config/dnsmasq-setup.conf")
+def test_setup_ap_script_is_open_ap_shared_mode():
+    text = _read("scripts/setup-ap.sh")
+    assert "802-11-wireless.mode ap" in text, (
+        "setup-ap.sh must set 802-11-wireless.mode ap (NM hotspot mode)"
+    )
+    assert "ipv4.method shared" in text, (
+        "setup-ap.sh must set ipv4.method shared (NM provides DHCP + gateway)"
+    )
 
 
-# ── sunset-cam-setup.service ────────────────────────────────────────────────
+def test_setup_ap_script_has_up_and_down_commands():
+    text = _read("scripts/setup-ap.sh")
+    assert "up)" in text, "setup-ap.sh must handle the 'up' argument"
+    assert "down)" in text, "setup-ap.sh must handle the 'down' argument"
+
+
+def test_setup_ap_script_embeds_mac_suffix_in_ssid():
+    text = _read("scripts/setup-ap.sh")
+    # The SSID is built with a mac_suffix function call so each unit is unique.
+    assert "mac_suffix" in text, (
+        "setup-ap.sh must use a mac_suffix function to build a unique SSID"
+    )
+    assert "Sunset-Cam-" in text, (
+        "setup-ap.sh SSID must start with 'Sunset-Cam-'"
+    )
+
+
+def test_setup_ap_script_does_not_reference_hostapd_or_dnsmasq():
+    text = _read("scripts/setup-ap.sh")
+    assert "hostapd" not in text, "setup-ap.sh must not reference hostapd"
+    assert "dnsmasq" not in text, "setup-ap.sh must not reference dnsmasq"
+
+
+# ── systemd/sunset-cam-setup.service ────────────────────────────────────────
 
 def test_setup_service_conflicts_with_supervisor_and_capture():
     text = _read("systemd/sunset-cam-setup.service")
@@ -70,16 +73,32 @@ def test_setup_service_runs_the_flask_portal_entrypoint():
     assert "run-setup-app.py" in _read("systemd/sunset-cam-setup.service")
 
 
-def test_setup_service_has_mac_suffix_substition_in_execstartpre():
+def test_setup_service_references_setup_ap_script():
     text = _read("systemd/sunset-cam-setup.service")
-    # ExecStartPre must substitute the XXXX MAC suffix into the AP SSID.
-    assert "Sunset-Cam-" in text
-    assert "MAC" in text  # the shell variable that holds the suffix
+    assert "setup-ap.sh" in text, (
+        "sunset-cam-setup.service must call setup-ap.sh for AP bring-up/teardown"
+    )
 
 
-def test_setup_service_assigns_static_ap_ip():
+def test_setup_service_does_not_reference_hostapd_or_dnsmasq():
     text = _read("systemd/sunset-cam-setup.service")
-    assert "10.42.0.1" in text
+    assert "hostapd" not in text, (
+        "sunset-cam-setup.service must not reference hostapd — use NM hotspot"
+    )
+    assert "dnsmasq" not in text, (
+        "sunset-cam-setup.service must not reference dnsmasq — NM shared mode "
+        "provides DHCP automatically"
+    )
+
+
+def test_setup_service_has_execstartpre_up_and_execstoppost_down():
+    text = _read("systemd/sunset-cam-setup.service")
+    assert "ExecStartPre=" in text and "setup-ap.sh up" in text, (
+        "service must call setup-ap.sh up in ExecStartPre"
+    )
+    assert "ExecStopPost=" in text and "setup-ap.sh down" in text, (
+        "service must call setup-ap.sh down in ExecStopPost"
+    )
 
 
 # ── sunset-cam-boot.service ─────────────────────────────────────────────────
