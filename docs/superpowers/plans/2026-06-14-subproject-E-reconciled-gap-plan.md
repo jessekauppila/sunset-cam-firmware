@@ -182,3 +182,30 @@ Final gate: `python3.11 -m pytest -q` all green; no duplication of the existing 
 - Covers every MISSING item from the audit; every "already exists" item is verify/extend, not rebuild. ✓
 - Seam adaptations (no-token register, provision endpoint, deployment placement fields, string-directive normalization) each map to a task. ✓
 - Hardware-gated items explicitly deferred, not silently skipped. ✓
+
+---
+
+## Remaining work + product-lifecycle timing (added 2026-06-14, after hardware validation)
+
+E's core onboarding loop is hardware-validated end-to-end on a spare Pi Zero W (current Pi OS / NetworkManager). Remaining work, ordered by WHERE in the product lifecycle it belongs:
+
+### Stage 0 — Prototype (now) ✅ DONE
+Validate the flow by hand (manual `systemctl start sunset-cam-setup`). Proven on hardware.
+
+### Stage 1 — First shippable unit ("a customer can use it unattended")
+These are CORRECTNESS requirements, not scale — they come EARLY, before shipping even one unit:
+- **Enable the boot dispatcher as a real systemd boot** (`systemctl enable sunset-cam-boot.service`). The device must auto-decide SETUP vs ONLINE at every boot with no SSH. Small (enable + verify auto-decide). This is NOT a scale feature — it's required for any unattended unit.
+- **Bad-WiFi-password safety net** — if the join fails after the post-SETUP reboot, fall back to SETUP so a wrong password self-recovers (no lock-out / brick). Required so a typo doesn't strand a customer.
+- **Cloud provisioning live** — `/api/cameras/provision` (mint identity+token, create the camera, print sticker) needs PR #67 deployed. Required so each shipped unit gets its real cloud identity.
+
+### Stage 2 — Small batches (more than 1–2 units)
+- **Commission script** (user ask) — one script per Pi: install firmware + services + enable the boot dispatcher + provision identity + print sticker. Two layers: (a) Pi-side install (buildable NOW, no cloud) and (b) cloud provisioning (needs PR #67). Build it when hand-setup becomes the bottleneck — i.e. when you commit to a small batch. Before that, by-hand is fine (firmware still changing fast).
+
+### Stage 3 — Scale manufacturing (batches of ~10+)
+- **SD-image / flash automation** — build ONE golden SD image (OS + firmware + services + configs pre-baked) so each unit = `dd` the image in minutes, no per-unit install. This is the difference between "install software on each Pi" and "clone a finished disk." It SUPERSEDES the commission script's per-unit install. Worth the effort only when per-unit install is the bottleneck (batches). Not needed for the first few units.
+
+### Production polish (any time after first ship)
+- **Captive-portal auto-popup** (DNS hijack) — the portal opens automatically in the OS captive-network assistant; also softens the "not secure" warning.
+- Numeric-id auth on decommission/pause endpoints (cloud); firmware parked-branch consolidation.
+
+**Key distinction:** "enable the boot dispatcher as a real systemd boot" (Stage 1, required for ANY unattended unit) is separate from "SD-image/flash automation" (Stage 3, a manufacturing-efficiency optimization). The first is correctness; the second is scale.
