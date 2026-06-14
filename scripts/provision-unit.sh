@@ -109,6 +109,7 @@ write_identity(
     camera_id=int(os.environ["CAMERA_ID"]),
     device_token=os.environ["DEVICE_TOKEN"],
     api_base=os.environ["API_BASE"],
+    hardware_id=os.environ["HARDWARE_ID"],
 )
 print("    wrote", os.environ["CONFIG_OUT"])
 PYEOF
