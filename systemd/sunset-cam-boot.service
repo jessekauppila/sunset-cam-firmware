@@ -1,12 +1,17 @@
 [Unit]
 Description=Sunset Cam boot dispatcher (decides SETUP vs ONLINE)
-# NetworkManager must be up before this runs so that:
-#   1. nmcli can list saved WiFi connections (has_wifi_credentials).
-#   2. nmcli can check active connections (is_online) while we wait for the
-#      join to complete.
-# Wants= pulls NM in if it is not already in the boot graph.
-After=NetworkManager.service
-Wants=NetworkManager.service
+# Must run AFTER NetworkManager has finished its startup connection attempt — not
+# merely after it has *started*. `After=NetworkManager.service` only means NM's
+# process launched; it has NOT yet loaded saved profiles or attempted autoconnect,
+# so nmcli returns an empty list and has_wifi_credentials() wrongly reports "no
+# creds" → a false SETUP decision (observed on a slow Pi Zero W: dispatcher ran in
+# 5s, hit SETUP, then NM joined home WiFi → AP-vs-home flap).
+# network-online.target (reached when NetworkManager-wait-online completes) blocks
+# until NM is settled — connected, or timed out — so by the time we run:
+#   1. nmcli lists the real saved WiFi connections (has_wifi_credentials), and
+#   2. a good home network is already associated (is_online true on the first poll).
+After=network-online.target NetworkManager.service
+Wants=network-online.target
 Before=sunset-cam-supervisor.service sunset-cam-setup.service
 
 [Service]
