@@ -4,6 +4,9 @@ from __future__ import annotations
 import subprocess
 from typing import Callable, List
 
+# The AP profile created by scripts/setup-ap.sh — not a home WiFi credential.
+SETUP_AP_CON = "sunset-setup-ap"
+
 
 def _default_nmcli_runner(args: list) -> str:
     """Run a command and return its stdout. Never raises on non-zero exit."""
@@ -11,12 +14,20 @@ def _default_nmcli_runner(args: list) -> str:
 
 
 def has_wifi_credentials(runner: Callable[[list], str] = _default_nmcli_runner) -> bool:
-    """True when NetworkManager has at least one saved WiFi (802-11-wireless) connection."""
+    """True when NetworkManager has at least one saved home WiFi connection.
+
+    Excludes the setup AP profile (``sunset-setup-ap``) — that is our own AP,
+    not a home credential.  A device with only the setup AP profile still needs
+    to run the captive portal.
+    """
     out = runner(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
     for line in out.splitlines():
-        # -t output is colon-separated; TYPE is the last field. NAMEs may contain
-        # escaped colons (\:) but the TYPE token is stable at the end.
-        if line.strip().endswith("802-11-wireless"):
+        if not line.strip():
+            continue
+        # NAME may contain escaped colons (\:); TYPE is the last field.
+        name, _, ctype = line.rpartition(":")
+        name = name.replace("\\:", ":")
+        if ctype.strip() == "802-11-wireless" and name != SETUP_AP_CON:
             return True
     return False
 
@@ -27,13 +38,18 @@ def decide_boot_state(wifi_check: Callable[[], bool]) -> str:
 
 
 def wipe_wifi_credentials(runner: Callable[[list], str] = _default_nmcli_runner) -> None:
-    """Delete all saved WiFi connections so the device re-enters SETUP next boot."""
+    """Delete all saved home WiFi connections so the device re-enters SETUP next boot.
+
+    Skips ``sunset-setup-ap`` — that is the captive-portal AP profile, not a
+    home credential.
+    """
     out = runner(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
     for line in out.splitlines():
-        if line.strip().endswith("802-11-wireless"):
-            name = line.rsplit(":", 1)[0]
-            # un-escape nmcli's \: in NAME
-            name = name.replace("\\:", ":")
+        if not line.strip():
+            continue
+        name, _, ctype = line.rpartition(":")
+        name = name.replace("\\:", ":")
+        if ctype.strip() == "802-11-wireless" and name != SETUP_AP_CON:
             runner(["nmcli", "connection", "delete", name])
 
 

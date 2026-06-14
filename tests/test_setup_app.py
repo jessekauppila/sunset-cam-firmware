@@ -1,7 +1,7 @@
 """Tests for the captive-portal Flask app (wifi onboarding).
 
 Uses Flask's built-in test client — no real hardware required.
-scan_fn and wifi_service are injected fakes.
+scan_fn, wifi_service, and reboot_fn are injected fakes.
 """
 from __future__ import annotations
 
@@ -24,6 +24,14 @@ class FakeWifi:
         self.connected = (ssid, psk)
 
 
+class FakeReboot:
+    def __init__(self):
+        self.called = False
+
+    def __call__(self):
+        self.called = True
+
+
 def make_scan_fn(*ssids):
     """Return a scan_fn that yields a fixed list of network dicts."""
     networks = [{"ssid": s, "signal_dbm": -50, "encrypted": True} for s in ssids]
@@ -40,10 +48,16 @@ def fake_wifi():
 
 
 @pytest.fixture()
-def client(fake_wifi):
+def fake_reboot():
+    return FakeReboot()
+
+
+@pytest.fixture()
+def client(fake_wifi, fake_reboot):
     app = create_app(
         scan_fn=make_scan_fn("HomeNetwork", "Neighbor"),
         wifi_service=fake_wifi,
+        reboot_fn=fake_reboot,
     )
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -89,8 +103,21 @@ def test_post_connect_success_page_mentions_ssid(client, fake_wifi):
     assert b"HomeNetwork" in rv.data
 
 
+def test_post_connect_success_calls_reboot_fn(client, fake_wifi, fake_reboot):
+    """After a successful save, reboot_fn must be called."""
+    client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
+    assert fake_reboot.called is True
+
+
+def test_post_connect_success_page_mentions_reboot(client, fake_wifi):
+    """Success page copy should mention reboot so user knows what to expect."""
+    rv = client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
+    body = rv.data.lower()
+    assert b"reboot" in body or b"restart" in body
+
+
 # ---------------------------------------------------------------------------
-# POST /connect — empty ssid → 400, no join
+# POST /connect — empty ssid → 400, no join, no reboot
 # ---------------------------------------------------------------------------
 
 def test_post_connect_empty_ssid_returns_400(client, fake_wifi):
@@ -107,6 +134,12 @@ def test_post_connect_empty_ssid_shows_error(client, fake_wifi):
     rv = client.post("/connect", data={"ssid": "", "psk": "pw"})
     # Should re-render the form with an error message
     assert b"<form" in rv.data
+
+
+def test_post_connect_empty_ssid_reboot_not_called(client, fake_wifi, fake_reboot):
+    """On validation failure, reboot_fn must NOT be called."""
+    client.post("/connect", data={"ssid": "", "psk": "pw"})
+    assert fake_reboot.called is False
 
 
 # ---------------------------------------------------------------------------

@@ -57,6 +57,23 @@ def test_has_wifi_credentials_runner_receives_nmcli_list_command():
     assert captured[0] == ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"]
 
 
+def test_has_wifi_credentials_false_when_only_setup_ap():
+    """sunset-setup-ap is our own AP profile — not a home credential → False."""
+    from sunset_cam.boot import has_wifi_credentials
+    out = _nmcli_out("sunset-setup-ap:802-11-wireless")
+    assert has_wifi_credentials(runner=lambda _: out) is False
+
+
+def test_has_wifi_credentials_true_when_setup_ap_and_real_wifi():
+    """If a real home WiFi is also present alongside the AP profile → True."""
+    from sunset_cam.boot import has_wifi_credentials
+    out = _nmcli_out(
+        "sunset-setup-ap:802-11-wireless",
+        "HomeWifi:802-11-wireless",
+    )
+    assert has_wifi_credentials(runner=lambda _: out) is True
+
+
 # ---------------------------------------------------------------------------
 # wipe_wifi_credentials — nmcli injected runner
 # ---------------------------------------------------------------------------
@@ -115,6 +132,26 @@ def test_wipe_wifi_credentials_noop_when_no_wifi_connections():
     wipe_wifi_credentials(runner=runner)
     delete_calls = [c for c in calls if "delete" in c]
     assert delete_calls == []
+
+
+def test_wipe_wifi_credentials_does_not_delete_setup_ap():
+    """wipe must skip the sunset-setup-ap profile — it is not a home credential."""
+    from sunset_cam.boot import wipe_wifi_credentials
+    out = _nmcli_out(
+        "sunset-setup-ap:802-11-wireless",
+        "HomeWifi:802-11-wireless",
+    )
+    calls = []
+
+    def runner(args):
+        calls.append(args)
+        return out
+
+    wipe_wifi_credentials(runner=runner)
+    delete_calls = [c for c in calls if "delete" in c]
+    deleted_names = {c[c.index("delete") + 1] for c in delete_calls}
+    assert "sunset-setup-ap" not in deleted_names
+    assert "HomeWifi" in deleted_names
 
 
 def test_wipe_wifi_credentials_unescapes_colons_in_name():

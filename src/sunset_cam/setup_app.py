@@ -70,16 +70,15 @@ _SUCCESS_HTML = """\
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connecting…</title>
+  <title>Saved</title>
   <style>
     body { font-family: sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
     h1   { font-size: 1.4rem; color: #080; }
   </style>
 </head>
 <body>
-  <h1>Connecting…</h1>
-  <p>The camera will join <strong>{{ ssid }}</strong> and come online shortly.</p>
-  <p>You can close this page. The camera will appear on your network in about 30 seconds.</p>
+  <h1>Saved.</h1>
+  <p>The camera will reboot and join <strong>{{ ssid }}</strong> in about a minute — you can close this page.</p>
 </body>
 </html>
 """
@@ -96,6 +95,21 @@ _PROBE_PATHS = frozenset([
 
 
 # ---------------------------------------------------------------------------
+# Default reboot implementation
+# ---------------------------------------------------------------------------
+
+def _default_reboot() -> None:
+    """Schedule a reboot 3 s out via systemd so the HTTP response flushes first.
+
+    Using ``systemd-run --on-active`` means the reboot is triggered by the
+    init system after a short delay, giving Flask time to send the success page
+    before the AP radio drops.
+    """
+    import subprocess
+    subprocess.Popen(["systemd-run", "--on-active=3", "systemctl", "reboot"])
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -103,6 +117,7 @@ def create_app(
     *,
     scan_fn: Callable[[], list[dict]],
     wifi_service,
+    reboot_fn: Callable[[], None] = _default_reboot,
 ) -> Flask:
     """Build and return the captive-portal Flask application.
 
@@ -115,8 +130,12 @@ def create_app(
     wifi_service:
         Object with a ``connect(ssid, psk)`` method
         (a :class:`~sunset_cam.wifi_setup.WifiSetupService` or a test fake).
-        ``connect`` saves the NM profile AND joins the network in one call;
+        ``connect`` saves the NM profile without activating it;
         raises ``ValueError`` when ssid is empty.
+    reboot_fn:
+        Zero-argument callable invoked after a successful credential save.
+        Defaults to a systemd-run delayed reboot so the radio switches cleanly
+        on next boot.  Inject a no-op or spy in tests.
     """
     app = Flask(__name__)
 
@@ -130,7 +149,7 @@ def create_app(
                                       selected=None, error=None)
 
     # ------------------------------------------------------------------
-    # POST /connect — write creds + join
+    # POST /connect — save creds, then schedule reboot
     # ------------------------------------------------------------------
     @app.post("/connect")
     def connect():
@@ -144,6 +163,7 @@ def create_app(
             body = render_template_string(_INDEX_HTML, networks=networks,
                                           selected=ssid, error=str(exc))
             return body, 400
+        reboot_fn()
         return render_template_string(_SUCCESS_HTML, ssid=ssid), 200
 
     # ------------------------------------------------------------------
