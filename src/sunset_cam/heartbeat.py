@@ -13,11 +13,20 @@ def _coord(v):
 
 
 def parse_placement(body: dict) -> dict:
-    """Extract the supervisor-relevant fields from a heartbeat response."""
+    """Extract supervisor-relevant placement from a heartbeat response. Handles
+    both the awaiting_aim shape (top-level lat/lng) and the ready shape (nested
+    under body['placement'] with the full aim + provenance)."""
+    placement = body.get("placement") or {}
     return {
         "placement_status": body.get("placement_status"),
-        "lat": _coord(body.get("lat")),
-        "lng": _coord(body.get("lng")),
+        "lat": _coord(placement.get("lat", body.get("lat"))),
+        "lng": _coord(placement.get("lng", body.get("lng"))),
+        "azimuth_deg": placement.get("azimuth_deg"),
+        "tilt_deg": placement.get("tilt_deg"),
+        "coarse": placement.get("coarse"),
+        "azimuth_source": placement.get("azimuth_source"),
+        "bracket": placement.get("bracket"),
+        "phase_preference": placement.get("phase_preference"),
     }
 
 
