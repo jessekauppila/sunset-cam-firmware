@@ -1,79 +1,58 @@
-"""Parse ``iwlist wlan0 scan`` output into a structured list of networks."""
+"""Scan for nearby WiFi networks via NetworkManager (``nmcli``).
+
+The ship OS (current Raspberry Pi OS) manages WiFi with NetworkManager, so we
+scan with ``nmcli ... device wifi list`` rather than the old ``iwlist``.
+"""
 from __future__ import annotations
 
-import re
+import subprocess
+from typing import Callable
 
 
-def parse_iwlist(output: str) -> list[dict]:
-    """Parse ``iwlist wlan0 scan`` text.
+def _default_nmcli_runner(args: list) -> str:
+    return subprocess.run(args, capture_output=True, text=True, check=False).stdout
 
-    Returns a list of ``{"ssid": str, "signal_dbm": int | None, "encrypted": bool}``
-    sorted by signal strength descending (networks with no signal sort last).
-    Blank / hidden SSIDs (empty or containing only null bytes) are dropped.
-    Duplicate SSIDs are de-duplicated, keeping the entry with the strongest signal.
-    """
-    if not output.strip():
+
+def scan_networks(runner: Callable[[list], str] = _default_nmcli_runner) -> list[dict]:
+    """Return nearby WiFi networks (parsed, sorted, de-duped). Never raises — a
+    failed scan yields ``[]`` so the captive portal still renders."""
+    try:
+        out = runner(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"]
+        )
+    except Exception:  # noqa: BLE001 — a scan failure must not break the portal
         return []
+    return parse_nmcli_wifi(out)
 
-    # Split into per-cell blocks on the "Cell XX - " marker
-    blocks = re.split(r"\n?\s*Cell \d+ - ", output)
 
-    # First element is the header line ("wlan0  Scan completed :"), skip it.
-    cells = blocks[1:]
+def parse_nmcli_wifi(output: str) -> list[dict]:
+    """Parse terse ``nmcli -t -f SSID,SIGNAL,SECURITY device wifi list`` output.
 
-    best: dict[str, dict] = {}  # ssid -> network dict (strongest so far)
-
-    for cell in cells:
-        ssid = _parse_essid(cell)
+    Each line is ``SSID:SIGNAL:SECURITY`` (e.g. ``Home Net:58:WPA1 WPA2``).
+    Returns ``{"ssid": str, "signal": int, "encrypted": bool}`` dicts sorted by
+    signal (0-100) descending; blank/hidden SSIDs dropped; duplicates de-duped
+    keeping the strongest.
+    """
+    best: dict[str, dict] = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        # SSID may contain escaped colons (\:); SIGNAL and SECURITY never do, so
+        # split the two rightmost colons off and treat the rest as the SSID.
+        parts = line.rsplit(":", 2)
+        if len(parts) != 3:
+            continue
+        raw_ssid, raw_signal, raw_security = parts
+        ssid = raw_ssid.replace("\\:", ":").replace("\x00", "").strip()
         if not ssid:
-            continue  # drop blank / hidden / null-byte SSIDs
-
-        signal_dbm = _parse_signal(cell)
-        encrypted = _parse_encrypted(cell)
-
-        network = {"ssid": ssid, "signal_dbm": signal_dbm, "encrypted": encrypted}
-
-        if ssid not in best:
+            continue  # hidden / blank
+        try:
+            signal = int(raw_signal)
+        except ValueError:
+            signal = 0
+        security = raw_security.strip()
+        encrypted = bool(security) and security != "--"
+        network = {"ssid": ssid, "signal": signal, "encrypted": encrypted}
+        if ssid not in best or signal > best[ssid]["signal"]:
             best[ssid] = network
-        else:
-            # Keep the one with the stronger (less-negative) signal.
-            existing = best[ssid]["signal_dbm"]
-            if signal_dbm is not None and (existing is None or signal_dbm > existing):
-                best[ssid] = network
-
-    # Sort by signal descending; None sorts last.
-    return sorted(
-        best.values(),
-        key=lambda n: n["signal_dbm"] if n["signal_dbm"] is not None else float("-inf"),
-        reverse=True,
-    )
-
-
-_ESSID_RE = re.compile(r'ESSID:"(.*?)"', re.DOTALL)
-_SIGNAL_RE = re.compile(r"Signal level=(-?\d+)\s*dBm", re.IGNORECASE)
-_ENC_KEY_RE = re.compile(r"Encryption key:(on|off)", re.IGNORECASE)
-
-
-def _parse_essid(cell: str) -> str:
-    """Return the SSID string, or '' if absent / hidden / blank / null-byte-only."""
-    m = _ESSID_RE.search(cell)
-    if not m:
-        return ""
-    raw = m.group(1)
-    # Drop entirely if the value is empty or consists only of null bytes / whitespace
-    stripped = raw.replace("\x00", "").strip()
-    return stripped  # empty string if hidden
-
-
-def _parse_signal(cell: str) -> int | None:
-    """Return signal level in dBm, or None when the line is absent."""
-    m = _SIGNAL_RE.search(cell)
-    return int(m.group(1)) if m else None
-
-
-def _parse_encrypted(cell: str) -> bool:
-    """Return True when 'Encryption key:on', False otherwise."""
-    m = _ENC_KEY_RE.search(cell)
-    if m:
-        return m.group(1).lower() == "on"
-    return False
+    return sorted(best.values(), key=lambda n: n["signal"], reverse=True)

@@ -110,7 +110,7 @@ def create_app(
     ----------
     scan_fn:
         Callable that returns a list of network dicts
-        ``{"ssid": str, "signal_dbm": int | None, "encrypted": bool}``.
+        ``{"ssid": str, "signal": int, "encrypted": bool}``.
         Called on every GET / so the list is always fresh.
     wifi_service:
         Object with a ``connect(ssid, psk)`` method
