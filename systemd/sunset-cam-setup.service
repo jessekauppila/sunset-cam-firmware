@@ -1,0 +1,28 @@
+[Unit]
+Description=Sunset Cam WiFi captive-portal setup (SETUP mode)
+# NetworkManager-native hotspot: setup-ap.sh creates an open shared-mode AP
+# via nmcli; NM provides DHCP + gateway at 10.42.0.1 automatically.
+After=network.target NetworkManager.service
+Conflicts=sunset-cam-supervisor.service sunset-cam.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sunset-cam
+
+# Bring up the open NM hotspot (open AP, shared mode, gateway 10.42.0.1).
+ExecStartPre=/opt/sunset-cam/scripts/setup-ap.sh up
+
+# Main process: Flask captive-portal on port 80.
+ExecStart=/opt/sunset-cam/.venv/bin/python /opt/sunset-cam/scripts/run-setup-app.py
+
+# Tear down the hotspot when the portal exits or is stopped.
+ExecStopPost=/opt/sunset-cam/scripts/setup-ap.sh down
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

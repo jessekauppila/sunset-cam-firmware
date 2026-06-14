@@ -45,3 +45,27 @@ def test_execute_reports_failed_when_a_sink_raises():
     )
     assert res["status"] == "failed"
     assert "network down" in res["detail"]
+
+
+def test_execute_wipe_wifi_calls_wiper_and_reports_done():
+    wiped = []
+    res = execute(
+        {"id": None, "type": "wipe_wifi"},
+        wifi_wiper=lambda: wiped.append(True),
+    )
+    assert res["id"] is None
+    assert res["status"] == "done"
+    assert wiped == [True]
+    assert "setup" in res["detail"]
+
+
+def test_execute_wipe_wifi_wiper_raises_reports_failed_never_raises():
+    def boom():
+        raise OSError("permission denied")
+    res = execute(
+        {"id": "d5", "type": "wipe_wifi"},
+        wifi_wiper=boom,
+    )
+    assert res["id"] == "d5"
+    assert res["status"] == "failed"
+    assert "permission denied" in res["detail"]

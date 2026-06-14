@@ -6,12 +6,21 @@ requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31",
   "smbus2>=0.4",
+  "flask>=3.0",
 ]
 
 [project.optional-dependencies]
+# Sticker generation runs on the PROVISIONING workstation (Mac), not the Pi.
+# pillow is a C extension that's painful on ARMv6 (Zero W), so it's opt-in.
+provision = [
+  "qrcode[pil]>=7.4",
+  "pillow>=9.5",
+]
 dev = [
   "pytest>=8.0",
   "responses>=0.25",
+  "qrcode[pil]>=7.4",
+  "pillow>=9.5",
 ]
 
 [build-system]
