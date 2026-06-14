@@ -174,13 +174,54 @@ grep -c "network={" /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null && \
 
 ---
 
+## Enable unattended boot (Stage 1)
+
+For the device to auto-run the flow at every boot, enable the boot dispatcher.
+The dispatcher is a oneshot that starts whichever of the two target services is
+appropriate — do NOT enable the setup or supervisor services directly (they are
+started on demand by the dispatcher).
+
+```bash
+sudo cp /opt/sunset-cam/systemd/sunset-cam-boot.service \
+        /opt/sunset-cam/systemd/sunset-cam-setup.service \
+        /opt/sunset-cam/systemd/sunset-cam-supervisor.service \
+        /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable sunset-cam-boot.service
+```
+
+> Note: `sunset-cam-boot.service` declares `After=NetworkManager.service` and
+> `Wants=NetworkManager.service` — it will not run until NM is up, ensuring
+> `nmcli` can list saved connections and check active ones.
+
+### What happens at each boot
+
+| Creds saved? | Network joins? | Service started | Dispatcher returns |
+|---|---|---|---|
+| No | n/a | `sunset-cam-setup.service` | `setup` |
+| Yes | within ~60 s | `sunset-cam-supervisor.service` | `online` |
+| Yes | never (bad password / network down) | `sunset-cam-setup.service` | `setup-fallback` |
+
+**Fallback behavior:** when saved creds exist but NM never completes the join
+(wrong password, network unreachable, or DHCP timeout), the dispatcher polls
+`is_online()` every 5 s for up to 12 retries (~60 s total). If the join does
+not succeed, it falls back to starting `sunset-cam-setup.service` — the setup AP
+re-appears and the customer can re-enter or correct their WiFi credentials. This
+prevents the device from silently sitting offline forever after a failed join.
+
+To test the fallback: connect the device to a network (creds saved), then change
+the WiFi password on your router. Reboot the Pi — after ~1 minute the
+`Sunset-Cam-XXXX` setup AP should reappear, allowing credentials to be corrected.
+
+---
+
 ## Step 4 — Reboot and watch the boot dispatcher
 
 ```bash
 sudo reboot
 ```
 
-Watch the dispatcher oneshot as it runs (SSH back in over ethernet after ~30s):
+Watch the dispatcher oneshot as it runs (SSH back in over ethernet after ~30 s):
 
 ```bash
 journalctl -u sunset-cam-boot --no-pager
@@ -190,6 +231,20 @@ Expected output (no creds case):
 ```
 sunset-cam-boot.service: ExecStart succeeded.
 systemctl start sunset-cam-setup.service   ← dispatcher chose SETUP
+sunset-cam-boot.service: Deactivating
+```
+
+Expected output (creds present, join succeeds):
+```
+sunset-cam-boot.service: ExecStart succeeded.
+systemctl start sunset-cam-supervisor.service   ← dispatcher chose ONLINE
+sunset-cam-boot.service: Deactivating
+```
+
+Expected output (creds present, join fails after ~60 s):
+```
+sunset-cam-boot.service: ExecStart succeeded.
+systemctl start sunset-cam-setup.service   ← dispatcher fell back to SETUP
 sunset-cam-boot.service: Deactivating
 ```
 
@@ -296,3 +351,5 @@ ip addr show wlan0
 | Submit says "could not connect" | Wrong password OR radio can't see that SSID | Verify SSID name is exact; try again |
 | Supervisor does not start after join | NM did not save/apply creds | Check `nmcli connection show`; `journalctl -u NetworkManager` |
 | Boot dispatcher starts supervisor even with no creds | Stale NM connection profile | `nmcli connection show` and delete any home-wifi profile; reboot |
+| SETUP AP reappears ~60 s after boot even though creds were set | Dispatcher fallback: NM joined timed out (bad password / network down) | Check `journalctl -u NetworkManager`; verify SSID/password; reconnect via portal |
+| Boot dispatcher runs before NetworkManager is ready | Missing NM ordering (old unit file) | Ensure unit has `After=NetworkManager.service` and `Wants=NetworkManager.service`; `sudo systemctl daemon-reload` |

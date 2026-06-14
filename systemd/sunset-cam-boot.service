@@ -1,19 +1,23 @@
 [Unit]
 Description=Sunset Cam boot dispatcher (decides SETUP vs ONLINE)
-# ⚠️  HARDWARE-GATED ordering notes:
-#   - After=basic.target: correct ordering for most Pi OS Lite images.
-#     Adjust to network-pre.target if you want it to run after wlan0 is up
-#     (so wpa_supplicant has already attempted association before the check).
-#   - Before=sunset-cam-supervisor.service sunset-cam-setup.service ensures
-#     this runs first and lets dispatch_boot start the right target.
-After=basic.target
+# NetworkManager must be up before this runs so that:
+#   1. nmcli can list saved WiFi connections (has_wifi_credentials).
+#   2. nmcli can check active connections (is_online) while we wait for the
+#      join to complete.
+# Wants= pulls NM in if it is not already in the boot graph.
+After=NetworkManager.service
+Wants=NetworkManager.service
 Before=sunset-cam-supervisor.service sunset-cam-setup.service
 
 [Service]
 Type=oneshot
-# dispatch_boot() in boot.main() checks /etc/wpa_supplicant/wpa_supplicant.conf
-# for a network={ block; if absent → starts sunset-cam-setup.service (SETUP);
-# if present → starts sunset-cam-supervisor.service (ONLINE).
+# dispatch_boot() in boot.main():
+#   1. Checks whether saved home WiFi creds exist (has_wifi_credentials).
+#   2. If no creds → starts sunset-cam-setup.service (captive-portal SETUP).
+#   3. If creds exist → polls is_online() up to ~60 s for NM to associate.
+#      Success → starts sunset-cam-supervisor.service (ONLINE).
+#      Timeout (bad password / network down) → falls back to
+#      sunset-cam-setup.service (SETUP) so the customer can re-enter creds.
 ExecStart=/opt/sunset-cam/.venv/bin/python -m sunset_cam.boot
 RemainAfterExit=no
 StandardOutput=journal
