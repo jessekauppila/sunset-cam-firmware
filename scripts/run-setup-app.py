@@ -19,7 +19,6 @@ from sunset_cam.setup_app import create_app
 from sunset_cam.wifi_scan import parse_iwlist
 from sunset_cam.wifi_setup import WifiSetupService
 
-WPA_PATH = "/etc/wpa_supplicant/wpa_supplicant.conf"
 IFACE = "wlan0"
 PORT = 80
 HOST = "0.0.0.0"
@@ -44,7 +43,7 @@ def _do_scan() -> list[dict]:
 
 
 def main() -> None:
-    wifi_service = WifiSetupService(WPA_PATH)
+    wifi_service = WifiSetupService()
     app = create_app(scan_fn=_do_scan, wifi_service=wifi_service)
     print(f"[setup-app] Captive portal on {HOST}:{PORT} — "
           f"connect to the Pi AP then open any browser page.")

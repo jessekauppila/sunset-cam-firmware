@@ -1,21 +1,24 @@
 """Boot-time decisions for the SETUP vs ONLINE split."""
 from __future__ import annotations
 
-from pathlib import Path
+import subprocess
 from typing import Callable, List
 
-WPA_PATH = "/etc/wpa_supplicant/wpa_supplicant.conf"
+
+def _default_nmcli_runner(args: list) -> str:
+    """Run a command and return its stdout. Never raises on non-zero exit."""
+    return subprocess.run(args, capture_output=True, text=True, check=False).stdout
 
 
-def has_wifi_credentials(wpa_path: str) -> bool:
-    """True when a wpa_supplicant file with a network={ block exists."""
-    p = Path(wpa_path)
-    if not p.exists():
-        return False
-    try:
-        return "network={" in p.read_text()
-    except OSError:
-        return False
+def has_wifi_credentials(runner: Callable[[list], str] = _default_nmcli_runner) -> bool:
+    """True when NetworkManager has at least one saved WiFi (802-11-wireless) connection."""
+    out = runner(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
+    for line in out.splitlines():
+        # -t output is colon-separated; TYPE is the last field. NAMEs may contain
+        # escaped colons (\:) but the TYPE token is stable at the end.
+        if line.strip().endswith("802-11-wireless"):
+            return True
+    return False
 
 
 def decide_boot_state(wifi_check: Callable[[], bool]) -> str:
@@ -23,25 +26,26 @@ def decide_boot_state(wifi_check: Callable[[], bool]) -> str:
     return "online" if wifi_check() else "setup"
 
 
-def wipe_wifi_credentials(wpa_path: str) -> None:
-    """Remove the wpa_supplicant credentials file so the device re-enters SETUP
-    on next boot. Idempotent: silently succeeds when the file is already absent."""
-    p = Path(wpa_path)
-    try:
-        p.unlink()
-    except FileNotFoundError:
-        pass
+def wipe_wifi_credentials(runner: Callable[[list], str] = _default_nmcli_runner) -> None:
+    """Delete all saved WiFi connections so the device re-enters SETUP next boot."""
+    out = runner(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
+    for line in out.splitlines():
+        if line.strip().endswith("802-11-wireless"):
+            name = line.rsplit(":", 1)[0]
+            # un-escape nmcli's \: in NAME
+            name = name.replace("\\:", ":")
+            runner(["nmcli", "connection", "delete", name])
 
 
 def dispatch_boot(*, wifi_check: Callable[[], bool], runner: Callable[[List[str]], None]) -> str:
     """Decide SETUP vs ONLINE and start the matching systemd target. Returns the state.
 
     SETUP  -> start the captive-portal stack (sunset-cam-setup.service).
-    ONLINE -> start the supervisor (sunset-cam-supervisor.service); wpa_supplicant
-              joins home WiFi on its own from the creds file.
+    ONLINE -> start the supervisor (sunset-cam-supervisor.service); NetworkManager
+              joins home WiFi automatically from its saved connection profile.
 
     Both ``wifi_check`` and ``runner`` are injected for testability; the real
-    ``main()`` wires in ``has_wifi_credentials(WPA_PATH)`` and ``subprocess.run``.
+    ``main()`` wires in ``has_wifi_credentials()`` and ``subprocess.run``.
     """
     state = decide_boot_state(wifi_check)
     if state == "setup":
@@ -57,6 +61,6 @@ def main() -> None:
     import subprocess
 
     dispatch_boot(
-        wifi_check=lambda: has_wifi_credentials(WPA_PATH),
+        wifi_check=has_wifi_credentials,
         runner=lambda args: subprocess.run(args, check=True),
     )

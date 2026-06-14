@@ -16,16 +16,12 @@ from sunset_cam.setup_app import create_app
 
 class FakeWifi:
     def __init__(self):
-        self.creds = None
-        self.joined = False
+        self.connected = None  # (ssid, psk) when connect() is called
 
-    def write_credentials(self, ssid: str, psk: str) -> None:
-        if not ssid.strip():
+    def connect(self, ssid: str, psk: str) -> None:
+        if not ssid or not ssid.strip():
             raise ValueError("empty ssid")
-        self.creds = (ssid, psk)
-
-    def join(self) -> None:
-        self.joined = True
+        self.connected = (ssid, psk)
 
 
 def make_scan_fn(*ssids):
@@ -83,14 +79,9 @@ def test_post_connect_success_returns_200(client, fake_wifi):
     assert rv.status_code == 200
 
 
-def test_post_connect_writes_credentials(client, fake_wifi):
+def test_post_connect_calls_connect_with_ssid_and_psk(client, fake_wifi):
     client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
-    assert fake_wifi.creds == ("HomeNetwork", "pw")
-
-
-def test_post_connect_calls_join(client, fake_wifi):
-    client.post("/connect", data={"ssid": "HomeNetwork", "psk": "pw"})
-    assert fake_wifi.joined is True
+    assert fake_wifi.connected == ("HomeNetwork", "pw")
 
 
 def test_post_connect_success_page_mentions_ssid(client, fake_wifi):
@@ -107,9 +98,9 @@ def test_post_connect_empty_ssid_returns_400(client, fake_wifi):
     assert rv.status_code == 400
 
 
-def test_post_connect_empty_ssid_no_join(client, fake_wifi):
+def test_post_connect_empty_ssid_connect_not_called(client, fake_wifi):
     client.post("/connect", data={"ssid": "", "psk": "pw"})
-    assert fake_wifi.joined is False
+    assert fake_wifi.connected is None
 
 
 def test_post_connect_empty_ssid_shows_error(client, fake_wifi):

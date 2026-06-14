@@ -1,12 +1,12 @@
-"""Write wpa_supplicant credentials and trigger a WiFi join.
+"""Connect to a WiFi network via NetworkManager (nmcli).
 
-Subprocess and file path are injected so the class is fully testable without
-any real hardware or wpa_cli present.
+The runner is injected so the class is fully testable without any real
+hardware or nmcli binary present. nmcli's ``device wifi connect`` both saves
+a connection profile AND joins the network in one call.
 """
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from typing import Callable
 
 
@@ -15,27 +15,28 @@ def _default_runner(args: list) -> None:
 
 
 class WifiSetupService:
-    """Write wpa_supplicant network creds and (re)associate with the AP.
+    """Save a WiFi profile and join the network via nmcli.
 
     Parameters
     ----------
-    wpa_path:
-        Filesystem path for the wpa_supplicant.conf to write.
     runner:
         Callable that receives a list of args and executes them (defaults to
-        ``subprocess.run``). Inject a mock in tests to avoid real wpa_cli calls.
+        ``subprocess.run``). Inject a mock in tests to avoid real nmcli calls.
     """
 
     def __init__(
         self,
-        wpa_path: str,
         runner: Callable[[list], None] = _default_runner,
     ) -> None:
-        self._wpa_path = wpa_path
         self._runner = runner
 
-    def write_credentials(self, ssid: str, psk: str) -> None:
-        """Write a minimal valid wpa_supplicant.conf with a network block.
+    def connect(self, ssid: str, psk: str) -> None:
+        """Save a NetworkManager WiFi profile and join the network.
+
+        Uses ``nmcli device wifi connect <ssid> password <psk>`` which both
+        creates/updates a connection profile and associates with the AP. nmcli
+        receives ssid and psk as separate argv elements — no shell escaping is
+        needed in our code.
 
         Raises
         ------
@@ -45,25 +46,4 @@ class WifiSetupService:
         if not ssid or not ssid.strip():
             raise ValueError(f"SSID must not be empty, got: {ssid!r}")
 
-        safe_ssid = ssid.replace('"', '\\"')
-        safe_psk = psk.replace('"', '\\"')
-
-        content = (
-            "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n"
-            "country=US\n"
-            "update_config=1\n"
-            "\n"
-            "network={\n"
-            f'\tssid="{safe_ssid}"\n'
-            f'\tpsk="{safe_psk}"\n'
-            "}\n"
-        )
-
-        Path(self._wpa_path).write_text(content)
-
-    def join(self) -> None:
-        """Ask wpa_supplicant to re-read credentials and (re)associate.
-
-        Uses the injected runner — no real wpa_cli call fires in tests.
-        """
-        self._runner(["wpa_cli", "-i", "wlan0", "reconfigure"])
+        self._runner(["nmcli", "device", "wifi", "connect", ssid, "password", psk])

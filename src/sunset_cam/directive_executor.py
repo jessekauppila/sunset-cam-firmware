@@ -5,7 +5,7 @@ WiFi credentials) are injected, so the dispatch logic is pure and unit-testable
 and the device wiring stays thin.
 
 Slice 1 handles one safe verb: ``ship-logs`` (read-only, no sudo).
-Slice C adds: ``wipe_wifi`` (delete wpa_supplicant creds; device re-enters SETUP).
+Slice C adds: ``wipe_wifi`` (delete NM WiFi connection profiles; device re-enters SETUP).
 Add ``restart`` / ``update`` later once a scoped sudoers rule exists.
 """
 from __future__ import annotations

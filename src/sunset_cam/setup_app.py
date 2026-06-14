@@ -113,8 +113,10 @@ def create_app(
         ``{"ssid": str, "signal_dbm": int | None, "encrypted": bool}``.
         Called on every GET / so the list is always fresh.
     wifi_service:
-        Object with ``write_credentials(ssid, psk)`` and ``join()`` methods
+        Object with a ``connect(ssid, psk)`` method
         (a :class:`~sunset_cam.wifi_setup.WifiSetupService` or a test fake).
+        ``connect`` saves the NM profile AND joins the network in one call;
+        raises ``ValueError`` when ssid is empty.
     """
     app = Flask(__name__)
 
@@ -135,14 +137,13 @@ def create_app(
         ssid = request.form.get("ssid", "")
         psk = request.form.get("psk", "")
         try:
-            wifi_service.write_credentials(ssid, psk)
+            wifi_service.connect(ssid, psk)
         except ValueError as exc:
             # Re-render the form with the error; HTTP 400
             networks = scan_fn()
             body = render_template_string(_INDEX_HTML, networks=networks,
                                           selected=ssid, error=str(exc))
             return body, 400
-        wifi_service.join()
         return render_template_string(_SUCCESS_HTML, ssid=ssid), 200
 
     # ------------------------------------------------------------------

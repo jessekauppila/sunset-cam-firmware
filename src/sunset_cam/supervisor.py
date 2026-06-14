@@ -20,7 +20,6 @@ from sunset_cam.device_config import write_location
 from sunset_cam.directive_executor import execute
 
 CONFIG_PATH = "/opt/sunset-cam/config/config.json"
-WPA_SUPPLICANT_PATH = "/etc/wpa_supplicant/wpa_supplicant.conf"
 
 
 def _read_journal(unit: str, lines: int) -> str:
@@ -119,7 +118,7 @@ def main(interval_s: float = 30.0) -> None:
         d,
         log_sink=lambda text: _ship_logs_to_cloud(config, text),
         journal_reader=_read_journal,
-        wifi_wiper=lambda: wipe_wifi_credentials(WPA_SUPPLICANT_PATH),
+        wifi_wiper=lambda: wipe_wifi_credentials(),
     )
     register_on_start(config, log=log)
     while True:
