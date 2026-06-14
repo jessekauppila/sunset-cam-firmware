@@ -99,8 +99,9 @@ def test_boot_service_wanted_by_multi_user():
 
 # ── scripts/firstboot.sh ────────────────────────────────────────────────────
 
-def test_firstboot_script_creates_sunset_cam_dir():
-    assert "/etc/sunset-cam" in _read("scripts/firstboot.sh")
+def test_firstboot_script_creates_config_dir():
+    # The firmware reads /opt/sunset-cam/config/config.json (supervisor CONFIG_PATH).
+    assert "/opt/sunset-cam/config" in _read("scripts/firstboot.sh")
 
 
 def test_firstboot_script_self_disables():
