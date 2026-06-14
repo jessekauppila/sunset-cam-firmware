@@ -44,3 +44,47 @@ def test_wipe_wifi_credentials_is_idempotent_when_file_absent(tmp_path):
     missing = str(tmp_path / "wpa_supplicant.conf")
     # Must not raise if the file is already gone
     wipe_wifi_credentials(missing)
+
+
+# --- dispatch_boot tests (TDD for E-1) ---
+
+def test_dispatch_boot_no_creds_starts_setup_service():
+    """No creds → state='setup' AND runner called with sunset-cam-setup.service."""
+    from sunset_cam.boot import dispatch_boot
+    calls = []
+    state = dispatch_boot(
+        wifi_check=lambda: False,
+        runner=lambda args: calls.append(args),
+    )
+    assert state == "setup"
+    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
+
+
+def test_dispatch_boot_creds_present_starts_supervisor():
+    """Creds present → state='online' AND runner called with sunset-cam-supervisor.service."""
+    from sunset_cam.boot import dispatch_boot
+    calls = []
+    state = dispatch_boot(
+        wifi_check=lambda: True,
+        runner=lambda args: calls.append(args),
+    )
+    assert state == "online"
+    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
+
+
+def test_dispatch_boot_setup_does_not_start_supervisor():
+    """In SETUP mode, the supervisor service must NOT be started."""
+    from sunset_cam.boot import dispatch_boot
+    calls = []
+    dispatch_boot(wifi_check=lambda: False, runner=lambda args: calls.append(args))
+    started = [a for a in calls if "start" in a]
+    assert not any("sunset-cam-supervisor.service" in a for a in started)
+
+
+def test_dispatch_boot_online_does_not_start_setup():
+    """In ONLINE mode, the setup service must NOT be started."""
+    from sunset_cam.boot import dispatch_boot
+    calls = []
+    dispatch_boot(wifi_check=lambda: True, runner=lambda args: calls.append(args))
+    started = [a for a in calls if "start" in a]
+    assert not any("sunset-cam-setup.service" in a for a in started)
