@@ -130,6 +130,14 @@ def test_boot_service_wanted_by_multi_user():
     assert "WantedBy=multi-user.target" in _read("systemd/sunset-cam-boot.service")
 
 
+def test_boot_service_waits_for_network_online():
+    # Must order after network-online.target — NetworkManager merely *started*
+    # isn't enough (nmcli returns no creds before NM settles → false SETUP).
+    text = _read("systemd/sunset-cam-boot.service")
+    assert "After=network-online.target" in text
+    assert "Wants=network-online.target" in text
+
+
 # ── scripts/firstboot.sh ────────────────────────────────────────────────────
 
 def test_firstboot_script_creates_config_dir():
