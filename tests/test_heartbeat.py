@@ -119,3 +119,23 @@ def test_post_heartbeat_surfaces_directives_from_the_response():
     )
     assert out["placement_status"] == "ready"
     assert out["directives"] == [{"id": "d1", "type": "ship-logs"}]
+
+
+def test_parse_directives_normalizes_bare_string_to_dict():
+    """Cloud can emit bare strings like ["wipe_wifi"]; normalize to {id, type}."""
+    out = parse_directives({"directives": ["wipe_wifi"]})
+    assert out == [{"id": None, "type": "wipe_wifi"}]
+
+
+def test_parse_directives_normalizes_mixed_list():
+    """A list with both bare strings and dicts: strings normalized, dicts pass through."""
+    out = parse_directives({
+        "directives": [
+            "wipe_wifi",
+            {"id": "d1", "type": "ship-logs"},
+        ]
+    })
+    assert out == [
+        {"id": None, "type": "wipe_wifi"},
+        {"id": "d1", "type": "ship-logs"},
+    ]

@@ -32,8 +32,16 @@ def parse_placement(body: dict) -> dict:
 
 def parse_directives(body: dict) -> list:
     """Pending control-plane directives the cloud handed back in a heartbeat
-    response (empty when absent). Each is a dict with at least id + type."""
-    return body.get("directives") or []
+    response (empty when absent). Each is a dict with at least id + type.
+
+    Bare strings (e.g. ``["wipe_wifi"]``) are normalized to
+    ``{"id": None, "type": <string>}`` so the executor always sees dicts.
+    """
+    raw = body.get("directives") or []
+    out = []
+    for d in raw:
+        out.append({"id": None, "type": d} if isinstance(d, str) else d)
+    return out
 
 
 def post_heartbeat(

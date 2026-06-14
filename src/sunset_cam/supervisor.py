@@ -10,6 +10,7 @@ from typing import Callable
 
 import requests
 
+from sunset_cam.boot import wipe_wifi_credentials
 from sunset_cam.config import load_config
 from sunset_cam.heartbeat import post_heartbeat
 from sunset_cam.placement_consume import decide_placement
@@ -19,6 +20,7 @@ from sunset_cam.device_config import write_location
 from sunset_cam.directive_executor import execute
 
 CONFIG_PATH = "/opt/sunset-cam/config/config.json"
+WPA_SUPPLICANT_PATH = "/etc/wpa_supplicant/wpa_supplicant.conf"
 
 
 def _read_journal(unit: str, lines: int) -> str:
@@ -114,7 +116,10 @@ def main(interval_s: float = 30.0) -> None:
     seen_ids: set = set()
     pending_results: list = []
     execute_fn = lambda d: execute(
-        d, log_sink=lambda text: _ship_logs_to_cloud(config, text), journal_reader=_read_journal,
+        d,
+        log_sink=lambda text: _ship_logs_to_cloud(config, text),
+        journal_reader=_read_journal,
+        wifi_wiper=lambda: wipe_wifi_credentials(WPA_SUPPLICANT_PATH),
     )
     register_on_start(config, log=log)
     while True:
