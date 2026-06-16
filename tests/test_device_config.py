@@ -27,12 +27,14 @@ def test_write_identity_writes_four_fields(tmp_path):
         camera_id=1,
         device_token="tok-abc",
         api_base="https://api.example.com",
+        hardware_id="hw-test",
     )
     cfg = json.loads(p.read_text())
     assert cfg["claim_code"] == "SUNSET-AAAA-BBBB"
     assert cfg["camera_id"] == 1
     assert cfg["device_token"] == "tok-abc"
     assert cfg["api_base"] == "https://api.example.com"
+    assert cfg["hardware_id"] == "hw-test"
 
 
 def test_write_identity_preserves_existing_keys(tmp_path):
@@ -44,6 +46,7 @@ def test_write_identity_preserves_existing_keys(tmp_path):
         camera_id=2,
         device_token="tok-xyz",
         api_base="https://api.example.com",
+        hardware_id="hw-test",
     )
     cfg = json.loads(p.read_text())
     # Identity fields written
@@ -66,6 +69,7 @@ def test_write_identity_creates_file_when_absent(tmp_path):
         camera_id=3,
         device_token="tok-new",
         api_base="https://api.example.com",
+        hardware_id="hw-test",
     )
     assert p.exists()
     cfg = json.loads(p.read_text())

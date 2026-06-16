@@ -12,7 +12,11 @@ Description=Sunset Cam boot dispatcher (decides SETUP vs ONLINE)
 #   2. a good home network is already associated (is_online true on the first poll).
 After=network-online.target NetworkManager.service
 Wants=network-online.target
-Before=sunset-cam-supervisor.service sunset-cam-setup.service
+# Deliberately NO `Before=` the units we start. boot.main() starts the chosen unit
+# imperatively (a blocking `systemctl start`). If this oneshot were ordered Before=
+# them, systemd would refuse to start an ordered-after unit from within our own
+# still-running ExecStart and silently drop the job — the device boots, joins WiFi,
+# and sits dark. The dispatcher owns sequencing; no ordering edge is needed here.
 
 [Service]
 Type=oneshot

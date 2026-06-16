@@ -99,6 +99,14 @@ def dispatch_boot(
     testability; real main() wires in has_wifi_credentials, is_online,
     subprocess.run-based runner, and time.sleep.
     """
+    # Plain (blocking) `systemctl start`: the boot.service oneshot waits until the
+    # target is actually up before exiting. This pairs with a hard requirement in
+    # systemd/sunset-cam-boot.service: it must NOT declare `Before=` these units.
+    # A unit ordered *after* the still-activating oneshot cannot be started from
+    # within our own ExecStart (systemd drops the job), and `--no-block` doesn't
+    # help — the non-blocking start gets torn down as the oneshot exits. With no
+    # ordering edge + a blocking start, the unit comes up and the oneshot exits
+    # cleanly once it's running.
     state = decide_boot_state(wifi_check)
     if state == "setup":
         runner(["systemctl", "start", "sunset-cam-setup.service"])
@@ -118,11 +126,14 @@ def dispatch_boot(
 
 
 def main() -> None:
-    """Boot dispatcher entry point (run as a oneshot by sunset-cam-boot.service).
-    No unit test for this thin wiring — all logic is tested via dispatch_boot."""
+    """Boot dispatcher entry point (run as a oneshot by sunset-cam-boot.service)."""
     dispatch_boot(
         wifi_check=has_wifi_credentials,
         online_check=is_online,
         runner=_run,
         sleep=time.sleep,
     )
+
+
+if __name__ == "__main__":
+    main()
