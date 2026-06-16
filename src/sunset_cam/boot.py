@@ -99,21 +99,30 @@ def dispatch_boot(
     testability; real main() wires in has_wifi_credentials, is_online,
     subprocess.run-based runner, and time.sleep.
     """
+    # --no-block on every start is REQUIRED, not cosmetic. This dispatcher runs
+    # as the `sunset-cam-boot.service` Type=oneshot, which declares
+    # `Before=sunset-cam-supervisor.service sunset-cam-setup.service`. A target
+    # ordered *after* this still-activating oneshot cannot be started
+    # synchronously from within our ExecStart — systemd silently swallows the
+    # start job (no deadlock, no error: `systemctl start` returns 0 and the unit
+    # never runs), so the device boots, joins WiFi, and then sits dark forever.
+    # `--no-block` enqueues the job and returns immediately; systemd runs it once
+    # this oneshot exits and the ordering is satisfied.
     state = decide_boot_state(wifi_check)
     if state == "setup":
-        runner(["systemctl", "start", "sunset-cam-setup.service"])
+        runner(["systemctl", "start", "--no-block", "sunset-cam-setup.service"])
         return "setup"
 
     # online: creds exist — wait for NM to actually join the home network.
     for _ in range(retries):
         if online_check():
-            runner(["systemctl", "start", "sunset-cam-supervisor.service"])
+            runner(["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"])
             return "online"
         sleep(interval)
 
     # Join never succeeded (bad password / network down) → re-enter SETUP so the
     # customer can fix it, rather than silently sitting offline forever.
-    runner(["systemctl", "start", "sunset-cam-setup.service"])
+    runner(["systemctl", "start", "--no-block", "sunset-cam-setup.service"])
     return "setup-fallback"
 
 

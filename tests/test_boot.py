@@ -200,7 +200,7 @@ def test_dispatch_boot_no_creds_starts_setup_service():
         sleep=lambda _: None,
     )
     assert state == "setup"
-    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
+    assert ["systemctl", "start", "--no-block", "sunset-cam-setup.service"] in calls
 
 
 def test_dispatch_boot_creds_present_starts_supervisor():
@@ -214,7 +214,7 @@ def test_dispatch_boot_creds_present_starts_supervisor():
         sleep=lambda _: None,
     )
     assert state == "online"
-    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
+    assert ["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"] in calls
 
 
 def test_dispatch_boot_setup_does_not_start_supervisor():
@@ -321,7 +321,7 @@ def test_dispatch_boot_no_creds_starts_setup_never_sleeps():
     )
 
     assert state == "setup"
-    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
+    assert ["systemctl", "start", "--no-block", "sunset-cam-setup.service"] in calls
     assert sleep_count[0] == 0
 
 
@@ -339,7 +339,7 @@ def test_dispatch_boot_creds_online_immediately_starts_supervisor_no_sleep():
     )
 
     assert state == "online"
-    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
+    assert ["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"] in calls
     assert sleep_count[0] == 0
 
 
@@ -365,7 +365,7 @@ def test_dispatch_boot_creds_online_on_third_poll():
     )
 
     assert state == "online"
-    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
+    assert ["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"] in calls
     assert sleep_count[0] == 2  # slept after poll 1 and poll 2
 
 
@@ -386,5 +386,5 @@ def test_dispatch_boot_creds_timeout_falls_back_to_setup():
     )
 
     assert state == "setup-fallback"
-    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
+    assert ["systemctl", "start", "--no-block", "sunset-cam-setup.service"] in calls
     assert sleep_count[0] == retries
