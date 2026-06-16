@@ -200,7 +200,7 @@ def test_dispatch_boot_no_creds_starts_setup_service():
         sleep=lambda _: None,
     )
     assert state == "setup"
-    assert ["systemctl", "start", "--no-block", "sunset-cam-setup.service"] in calls
+    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
 
 
 def test_dispatch_boot_creds_present_starts_supervisor():
@@ -214,7 +214,7 @@ def test_dispatch_boot_creds_present_starts_supervisor():
         sleep=lambda _: None,
     )
     assert state == "online"
-    assert ["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"] in calls
+    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
 
 
 def test_dispatch_boot_setup_does_not_start_supervisor():
@@ -243,6 +243,39 @@ def test_dispatch_boot_online_does_not_start_setup():
     )
     started = [a for a in calls if "start" in a]
     assert not any("sunset-cam-setup.service" in a for a in started)
+
+
+def test_running_module_as_main_invokes_the_dispatcher(monkeypatch):
+    """Regression: `python -m sunset_cam.boot` (the ExecStart) must call main().
+
+    A missing `if __name__ == "__main__"` guard meant boot.service ran the module,
+    defined the functions, and exited WITHOUT ever dispatching — the device booted,
+    joined WiFi, and sat dark (never registered, never heartbeated). Assert the
+    module, run as __main__, actually drives the dispatcher (which shells out).
+    """
+    import runpy
+    import subprocess
+    import warnings
+
+    calls = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(args, *a, **k):
+        calls.append(list(args))
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # module already imported
+        runpy.run_module("sunset_cam.boot", run_name="__main__")
+
+    # main() ran iff the dispatcher made its nmcli credential check.
+    assert any(c[:1] == ["nmcli"] for c in calls), \
+        "module run as __main__ did not invoke main() — missing entrypoint?"
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +354,7 @@ def test_dispatch_boot_no_creds_starts_setup_never_sleeps():
     )
 
     assert state == "setup"
-    assert ["systemctl", "start", "--no-block", "sunset-cam-setup.service"] in calls
+    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
     assert sleep_count[0] == 0
 
 
@@ -339,7 +372,7 @@ def test_dispatch_boot_creds_online_immediately_starts_supervisor_no_sleep():
     )
 
     assert state == "online"
-    assert ["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"] in calls
+    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
     assert sleep_count[0] == 0
 
 
@@ -365,7 +398,7 @@ def test_dispatch_boot_creds_online_on_third_poll():
     )
 
     assert state == "online"
-    assert ["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"] in calls
+    assert ["systemctl", "start", "sunset-cam-supervisor.service"] in calls
     assert sleep_count[0] == 2  # slept after poll 1 and poll 2
 
 
@@ -386,5 +419,5 @@ def test_dispatch_boot_creds_timeout_falls_back_to_setup():
     )
 
     assert state == "setup-fallback"
-    assert ["systemctl", "start", "--no-block", "sunset-cam-setup.service"] in calls
+    assert ["systemctl", "start", "sunset-cam-setup.service"] in calls
     assert sleep_count[0] == retries

@@ -99,39 +99,41 @@ def dispatch_boot(
     testability; real main() wires in has_wifi_credentials, is_online,
     subprocess.run-based runner, and time.sleep.
     """
-    # --no-block on every start is REQUIRED, not cosmetic. This dispatcher runs
-    # as the `sunset-cam-boot.service` Type=oneshot, which declares
-    # `Before=sunset-cam-supervisor.service sunset-cam-setup.service`. A target
-    # ordered *after* this still-activating oneshot cannot be started
-    # synchronously from within our ExecStart — systemd silently swallows the
-    # start job (no deadlock, no error: `systemctl start` returns 0 and the unit
-    # never runs), so the device boots, joins WiFi, and then sits dark forever.
-    # `--no-block` enqueues the job and returns immediately; systemd runs it once
-    # this oneshot exits and the ordering is satisfied.
+    # Plain (blocking) `systemctl start`: the boot.service oneshot waits until the
+    # target is actually up before exiting. This pairs with a hard requirement in
+    # systemd/sunset-cam-boot.service: it must NOT declare `Before=` these units.
+    # A unit ordered *after* the still-activating oneshot cannot be started from
+    # within our own ExecStart (systemd drops the job), and `--no-block` doesn't
+    # help — the non-blocking start gets torn down as the oneshot exits. With no
+    # ordering edge + a blocking start, the unit comes up and the oneshot exits
+    # cleanly once it's running.
     state = decide_boot_state(wifi_check)
     if state == "setup":
-        runner(["systemctl", "start", "--no-block", "sunset-cam-setup.service"])
+        runner(["systemctl", "start", "sunset-cam-setup.service"])
         return "setup"
 
     # online: creds exist — wait for NM to actually join the home network.
     for _ in range(retries):
         if online_check():
-            runner(["systemctl", "start", "--no-block", "sunset-cam-supervisor.service"])
+            runner(["systemctl", "start", "sunset-cam-supervisor.service"])
             return "online"
         sleep(interval)
 
     # Join never succeeded (bad password / network down) → re-enter SETUP so the
     # customer can fix it, rather than silently sitting offline forever.
-    runner(["systemctl", "start", "--no-block", "sunset-cam-setup.service"])
+    runner(["systemctl", "start", "sunset-cam-setup.service"])
     return "setup-fallback"
 
 
 def main() -> None:
-    """Boot dispatcher entry point (run as a oneshot by sunset-cam-boot.service).
-    No unit test for this thin wiring — all logic is tested via dispatch_boot."""
+    """Boot dispatcher entry point (run as a oneshot by sunset-cam-boot.service)."""
     dispatch_boot(
         wifi_check=has_wifi_credentials,
         online_check=is_online,
         runner=_run,
         sleep=time.sleep,
     )
+
+
+if __name__ == "__main__":
+    main()
