@@ -192,3 +192,55 @@ def test_capture_main_uploads_one_frame_when_in_window(tmp_path, monkeypatch):
 
     assert rc == 0
     assert uploads == [b"\xff\xd8jpeg"], "capture entrypoint did not upload one frame"
+
+
+# ---------------------------------------------------------------------------
+# SETUP-time script entrypoints (scripts/*.py): main() wires up and serves
+# ---------------------------------------------------------------------------
+
+def _load_script(filename: str):
+    """Import a scripts/*.py file as a module (scripts/ isn't a package)."""
+    import importlib.util
+
+    path = REPO_ROOT / "scripts" / filename
+    spec = importlib.util.spec_from_file_location(filename[:-3].replace("-", "_"), path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_run_setup_app_main_serves_the_portal(monkeypatch):
+    mod = _load_script("run-setup-app.py")
+
+    served = {}
+
+    class _FakeApp:
+        def run(self, **kw):
+            served.update(kw)
+
+    monkeypatch.setattr(mod, "WifiSetupService", lambda *a, **k: object())
+    monkeypatch.setattr(mod, "scan_networks", lambda *a, **k: [])
+    monkeypatch.setattr(mod, "create_app", lambda **kw: _FakeApp())
+
+    mod.main()
+
+    assert served.get("port") == 80, "captive-portal entrypoint did not serve on port 80"
+
+
+def test_run_setup_server_main_imports_off_pi_and_serves(monkeypatch):
+    # Imports cleanly only because `smbus2` is now lazy (would ImportError otherwise).
+    mod = _load_script("run-setup-server.py")
+
+    monkeypatch.setattr(
+        sys, "argv",
+        ["prog", "--lat", "48.75", "--lng", "-122.48", "--phase", "sunset"],
+    )
+    served = {}
+    monkeypatch.setattr(mod, "AimingService", lambda **kw: object())
+    monkeypatch.setattr(mod, "serve", lambda service, port: served.update(port=port))
+    monkeypatch.setattr(mod, "make_orientation_reader", lambda bus: None, raising=False)
+    monkeypatch.setattr(mod, "post_placement", lambda *a, **k: None, raising=False)
+
+    mod.main()
+
+    assert served.get("port") == 8080, "aiming setup-server entrypoint did not reach serve()"

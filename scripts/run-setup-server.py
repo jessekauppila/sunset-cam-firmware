@@ -16,8 +16,6 @@ import argparse
 import json
 from pathlib import Path
 
-import smbus2
-
 from sunset_cam.aiming_config import resolve_aiming_params
 from sunset_cam.capture import capture_jpeg, capture_gray_array
 from sunset_cam.gyro_driver import make_orientation_reader
@@ -47,9 +45,10 @@ def main() -> None:
     )
 
     try:
+        import smbus2  # lazy: present only on the Pi; keeps this module importable off-Pi
         reader = make_orientation_reader(smbus2.SMBus(1))
     except Exception:
-        reader = None   # MPU optional: no IMU -> assume mounted level, skip the gate
+        reader = None   # MPU optional / no smbus2 off-Pi -> assume mounted level, skip the gate
     # serve the setup-wizard bundle at "/" when it's deployed; else fall back to the
     # legacy single-page render.
     web_dir = Path(__file__).resolve().parent.parent / "web" / "setup-wizard"
