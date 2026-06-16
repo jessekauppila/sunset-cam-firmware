@@ -54,20 +54,29 @@ a "wired-up `main()` against a realistic config" defect, none caught by unit tes
 - `write_identity` dropped `hardware_id`, so register would 409 against the cloud
   (commit `582cba7`).
 
-**Audit of all five systemd `ExecStart` entrypoints (as of 2026-06-15):**
+**Audit of all five systemd `ExecStart` entrypoints (updated 2026-06-16 after the
+class was closed — see `tests/test_entrypoints_smoke.py`):**
 
 | Entrypoint | `__main__` guard | Entrypoint smoke test |
 |---|---|---|
-| `sunset_cam.boot` (`-m`) | yes | yes (the `runpy` test below) |
-| `sunset_cam.supervisor` (`-m`) | yes | **no** |
-| `sunset_cam.main` (`-m`) | yes | **no** |
-| `scripts/run-setup-server.py` | yes | **no** |
-| `scripts/run-setup-app.py` | yes | **no** |
+| `sunset_cam.boot` (`-m`) | yes | yes (`runpy` test in `test_boot.py`) |
+| `sunset_cam.supervisor` (`-m`) | yes | yes (behavioral — identity-only config) |
+| `sunset_cam.main` (`-m`) | yes | yes (behavioral — argv + one in-window upload) |
+| `scripts/run-setup-server.py` | yes | guard-only* |
+| `scripts/run-setup-app.py` | yes | guard-only |
 
-The fix + regression test closed the *instance* in `boot`. The *class* is still open
-for the other four: the specific "no guard" bug can't recur (all five now guard), but a
-sibling (wrong loader, missing field, bad `main()` wiring) can still ship to a device
-and only surface on-device. See Prevention for the remaining work.
+\* `run-setup-server.py` does `import smbus2` at module top, so it can't be imported
+off-Pi for a behavioral smoke. The missing-`__main__` mode is covered by a
+unit-file-discovered guard test that asserts every `ExecStart` target has a
+`__main__: main()` guard (present and future units). To enable a behavioral smoke,
+make the `smbus2` import lazy (inside `main()`, like `capture_jpeg` already is).
+
+The fix + regression test closed the *instance* in `boot`; `test_entrypoints_smoke.py`
+then closed the *class*: the missing-guard mode is guarded for all five entrypoints,
+and `supervisor`/`main` have behavioral smokes that exercise the real `main()` wiring
+against a realistic config (the `supervisor` one fails if `load_identity` ever regresses
+back to the strict `load_config`). Remaining: a behavioral smoke for `run-setup-app.py`
+and lazy `smbus2` to unblock one for `run-setup-server.py`.
 
 ## Why it stayed hidden for ~3 hours (the process root cause)
 
