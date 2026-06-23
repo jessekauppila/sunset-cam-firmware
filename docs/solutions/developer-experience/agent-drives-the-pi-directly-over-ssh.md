@@ -46,8 +46,10 @@ user can" principle, applied to hardware.
 ## When to Apply
 Any session that involves repeatedly running commands on a reachable device with key
 auth. Confirm reachability + auth once (`ssh -o BatchMode=yes host 'hostname'`), then
-prefer direct calls over dictation. If a NOPASSWD sudoers entry scoped to the deploy
-commands is ever added, the agent can own the full redeploy loop too.
+prefer direct calls over dictation. A NOPASSWD sudoers drop-in scoped to the deploy
+commands (`scripts/sunset-cam-deploy.sudoers`) closes the last gap — with it installed
+the agent owns the full `git pull` + `systemctl restart` + verify loop, not just the
+read side.
 
 ## Examples
 - Verify deploy + health in one call:

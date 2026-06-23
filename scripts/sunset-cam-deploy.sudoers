@@ -1,0 +1,32 @@
+# sunset-cam deploy sudoers drop-in — lets the bench dev loop (and an agent driving
+# the Pi over passwordless SSH) own the full redeploy+restart loop without an
+# interactive password, scoped to ONLY the sunset-cam deploy commands.
+#
+# This is the missing half of the "agent drives the Pi over SSH" workflow: read-only
+# commands already work key-only, but `git pull` into root-owned /opt/sunset-cam and
+# `systemctl restart` needed a password — so the agent could deploy but not verify
+# the new process live. See:
+#   docs/solutions/developer-experience/agent-drives-the-pi-directly-over-ssh.md
+#   docs/solutions/developer-experience/device-config-or-code-change-needs-a-service-restart.md
+#
+# SECURITY: this is a deliberate, narrow loosening for a bench/dev device. It grants
+# the `pi` user passwordless root for exactly these commands — NOT blanket sudo. The
+# `sunset-cam*` wildcard matches any sunset-cam unit name; sudo execs the command
+# directly (no shell), so shell-metachar injection is not possible. Do not widen it.
+# Adjust the `pi` user and binary paths (`which git`, `which systemctl`) to the device.
+#
+# Install (run on the Pi; validate BEFORE trusting it):
+#   sudo install -m 0440 -o root -g root \
+#     /opt/sunset-cam/scripts/sunset-cam-deploy.sudoers /etc/sudoers.d/sunset-cam-deploy
+#   sudo visudo -cf /etc/sudoers.d/sunset-cam-deploy   # must print "parsed OK"
+
+Cmnd_Alias SUNSET_DEPLOY = \
+    /usr/bin/git -C /opt/sunset-cam pull, \
+    /usr/bin/git -C /opt/sunset-cam fetch *, \
+    /usr/bin/git -C /opt/sunset-cam reset --hard *, \
+    /usr/bin/systemctl daemon-reload, \
+    /usr/bin/systemctl restart sunset-cam*, \
+    /usr/bin/systemctl start sunset-cam*, \
+    /usr/bin/systemctl stop sunset-cam*
+
+pi ALL=(root) NOPASSWD: SUNSET_DEPLOY
