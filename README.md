@@ -29,6 +29,38 @@ nano + JSON-by-hand + sudo deploy pain from Session 3. Both run from
 the dev mac and SSH into the Pi themselves — see the header comments
 in each for usage.
 
+## Capture profiles (sunsets, clouds, or both)
+
+A device runs one or more **capture profiles**. A profile is a window, a
+cadence and a sink, and at most one is active at a time. The legacy
+single-window config (flat `capture_window_*_utc` keys) still works unchanged:
+it is read as one profile named `sunset`.
+
+- **Windows:** `daily_utc` repeats every day and may wrap midnight
+  (`{"start": "16:00", "end": "01:00"}` is Pacific daytime); `absolute_utc` is
+  one ISO range. Overlapping daily windows are rejected.
+- **Sinks:** `welkin` posts the raw JPEG to `POST {url}/frames/{camera_id}`
+  with `X-Captured-At`, `X-Profile` and an optional bearer `token`; `sunset`
+  posts to this app's snapshot endpoint and needs top-level `api_base` and
+  `device_token`.
+- **Cadence:** `interval_s`. New profiles align to the clock (300 s captures at
+  :00, :05, :10), and the camera is released between windows.
+
+Write profiles with `configure.sh`, never by hand on the device.
+`configure.sh` runs **on the Pi**, so the profiles file must be there too.
+It ships in the repo under `config/`; for a custom one, copy it over first
+with `scp`. Then, on the Pi:
+
+```bash
+bash scripts/configure.sh \
+  --camera-id 3 \
+  --profiles-file config/profiles.clouds.example.json
+```
+
+It validates with the firmware's own loader before writing. To check a
+config by hand: `python -m sunset_cam.config /path/to/config.json`. Shape and
+rules: `src/sunset_cam/profiles.py`. Examples: `config/profiles.*.example.json`.
+
 ## Quickstart on a fresh Pi
 
 1. Flash Raspberry Pi OS Lite (64-bit, headless). Enable SSH + Wi-Fi

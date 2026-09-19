@@ -83,3 +83,62 @@ def test_load_config_rejects_non_iso_window(tmp_path: Path) -> None:
         load_config(
             write_cfg(tmp_path, {"capture_window_start_utc": "yesterday"})
         )
+
+
+# --- profiles -----------------------------------------------------------------
+
+
+def cloud_cfg() -> dict:
+    return {
+        "camera_id": 7,
+        "profiles": [
+            {
+                "name": "clouds",
+                "window": {"daily_utc": {"start": "16:00", "end": "01:00"}},
+                "interval_s": 300,
+                "sink": {"kind": "welkin", "url": "http://192.168.1.20:8000"},
+            }
+        ],
+    }
+
+
+def test_load_config_accepts_a_cloud_only_profiles_config(tmp_path: Path) -> None:
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(cloud_cfg()))
+    cfg = load_config(p)
+    assert cfg["camera_id"] == 7
+    assert cfg["log_level"] == "INFO"
+
+
+def test_load_config_turns_profile_errors_into_config_errors(tmp_path: Path) -> None:
+    bad = cloud_cfg()
+    bad["profiles"][0]["interval_s"] = -1
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(bad))
+    with pytest.raises(ConfigError, match="interval_s"):
+        load_config(p)
+
+
+def test_load_config_with_profiles_still_needs_camera_id(tmp_path: Path) -> None:
+    bad = cloud_cfg()
+    del bad["camera_id"]
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(bad))
+    with pytest.raises(ConfigError, match="camera_id"):
+        load_config(p)
+
+
+def test_validator_cli_reports_ok_and_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from sunset_cam.config import check_main
+
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps(cloud_cfg()))
+    assert check_main([str(good)]) == 0
+    assert "clouds" in capsys.readouterr().out
+
+    bad_cfg = cloud_cfg()
+    bad_cfg["profiles"][0]["sink"] = {"kind": "welkin"}
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(bad_cfg))
+    assert check_main([str(bad)]) == 1
+    assert "url" in capsys.readouterr().err

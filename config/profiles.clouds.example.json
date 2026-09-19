@@ -1,0 +1,10 @@
+{
+  "profiles": [
+    {
+      "name": "clouds",
+      "window": { "daily_utc": { "start": "15:00", "end": "02:00" } },
+      "interval_s": 300,
+      "sink": { "kind": "welkin", "url": "http://192.168.1.20:8000" }
+    }
+  ]
+}

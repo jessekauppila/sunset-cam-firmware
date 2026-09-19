@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
+
+from sunset_cam.profiles import ProfileError, profiles_from_config
 
 
 class ConfigError(ValueError):
@@ -13,6 +16,10 @@ class ConfigError(ValueError):
 
 
 class Config(TypedDict):
+    """The legacy (flat, single-window) shape. A config with a ``profiles``
+    list instead needs only ``camera_id`` plus whatever its sinks need; see
+    :mod:`sunset_cam.profiles`."""
+
     camera_id: int
     device_token: str
     api_base: str
@@ -60,18 +67,29 @@ def load_config(path: str | Path) -> Config:
     except json.JSONDecodeError as exc:
         raise ConfigError(f"config is not valid JSON: {exc}") from exc
 
-    for key in _REQUIRED:
-        if key not in raw:
-            raise ConfigError(f"missing required key: {key}")
+    if "profiles" in raw:
+        # Profiles config: the flat capture keys are not required. Each sink
+        # validates what it needs (a sunset sink still needs api_base etc.).
+        if "camera_id" not in raw:
+            raise ConfigError("missing required key: camera_id")
+    else:
+        for key in _REQUIRED:
+            if key not in raw:
+                raise ConfigError(f"missing required key: {key}")
 
-    if raw["phase"] not in ("sunrise", "sunset"):
-        raise ConfigError(f"phase must be sunrise or sunset, got {raw['phase']!r}")
+        if raw["phase"] not in ("sunrise", "sunset"):
+            raise ConfigError(f"phase must be sunrise or sunset, got {raw['phase']!r}")
+
+        try:
+            _parse_iso(raw["capture_window_start_utc"])
+            _parse_iso(raw["capture_window_end_utc"])
+        except ValueError as exc:
+            raise ConfigError(f"capture_window_*_utc must be ISO8601: {exc}") from exc
 
     try:
-        _parse_iso(raw["capture_window_start_utc"])
-        _parse_iso(raw["capture_window_end_utc"])
-    except ValueError as exc:
-        raise ConfigError(f"capture_window_*_utc must be ISO8601: {exc}") from exc
+        profiles_from_config(raw)
+    except ProfileError as exc:
+        raise ConfigError(str(exc)) from exc
 
     raw.setdefault("log_level", "INFO")
     return raw  # type: ignore[return-value]
@@ -100,3 +118,25 @@ def load_identity(path: str | Path) -> dict:
 
     raw.setdefault("log_level", "INFO")
     return raw
+
+
+def check_main(argv: list[str]) -> int:
+    """``python -m sunset_cam.config PATH``: validate a config the way the
+    capture loop will, without starting it. Exit 0 and print the profiles, or
+    exit 1 and print why. ``scripts/configure.sh`` calls this before writing."""
+    if len(argv) != 1:
+        print("usage: python -m sunset_cam.config /path/to/config.json", file=sys.stderr)
+        return 2
+    try:
+        cfg = load_config(argv[0])
+        profiles = profiles_from_config(cfg)
+    except ConfigError as exc:
+        print(f"invalid config: {exc}", file=sys.stderr)
+        return 1
+    for p in profiles:
+        print(f"ok: profile {p.name!r} every {p.interval_s:g}s -> {p.sink['kind']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(check_main(sys.argv[1:]))
