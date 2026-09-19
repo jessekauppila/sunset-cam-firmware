@@ -1,7 +1,12 @@
 [Unit]
 Description=Sunset Cam edge-camera firmware
-After=network-online.target
-Wants=network-online.target
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+# time-sync.target is only reached after NTP sets the clock if
+# systemd-time-wait-sync.service is enabled on the image:
+#   sudo systemctl enable systemd-time-wait-sync.service
+# The firmware also refuses to capture while the clock reads earlier than the
+# config file's mtime, as a second guard (a Pi Zero has no RTC).
 
 [Service]
 Type=simple

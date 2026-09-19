@@ -11,7 +11,7 @@ from typing import Callable
 import requests
 
 from sunset_cam.boot import wipe_wifi_credentials
-from sunset_cam.config import load_identity
+from sunset_cam.config import ConfigError, has_non_sunset_sink, has_sunset_sink, load_identity
 from sunset_cam.heartbeat import post_heartbeat
 from sunset_cam.placement_consume import decide_placement
 from sunset_cam.register import post_register
@@ -82,11 +82,21 @@ def decide_mode(placement_status) -> str:
     return "idle"
 
 
-def run_once(status_source: Callable[[], dict], controller, config_writer) -> str:
+def run_once(status_source: Callable[[], dict], controller, config_writer, keep_capture: bool = False) -> str:
+    """Apply the sunset app's placement state to the two units.
+
+    ``keep_capture``: the device also runs a profile whose sink is not the
+    sunset app (a welkin cloud profile). Its capture must not be switched off
+    because the sunset placement is idle or the sunset app is unreachable, so
+    'idle' becomes 'capture'. Aiming still takes the camera, since the aiming
+    preview needs it exclusively; a cloud camera is never aimed.
+    """
     result = status_source()
     mode = decide_mode(result.get("placement_status"))
     if mode == "aiming" and result.get("lat") is not None and result.get("lng") is not None:
         config_writer(result["lat"], result["lng"])
+    if keep_capture and mode == "idle":
+        mode = "capture"
     controller.set_mode(mode)
     return mode
 
@@ -106,12 +116,36 @@ def run_directives(directives, execute_fn: Callable[[dict], dict], seen_ids: set
     return results
 
 
+def _read_raw_config(path) -> dict | None:
+    import json
+    from pathlib import Path
+
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
 def main(interval_s: float = 30.0) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s supervisor %(message)s")
     log = logging.getLogger("supervisor")
     # Identity-only load: the supervisor must come ONLINE (register + heartbeat)
     # on a freshly-provisioned, unplaced device that has no capture config yet.
-    config = load_identity(CONFIG_PATH)
+    try:
+        config = load_identity(CONFIG_PATH)
+    except ConfigError as exc:
+        raw = _read_raw_config(CONFIG_PATH)
+        if raw is not None and not has_sunset_sink(raw):
+            # A welkin-only camera: no sunset identity, nothing to heartbeat to.
+            # Exit 0 so systemd (Restart=on-failure) leaves us stopped instead
+            # of restarting every 10 s forever.
+            log.info("no sunset sink in %s; nothing to supervise, exiting", CONFIG_PATH)
+            return
+        raise exc
+    keep_capture = has_non_sunset_sink(config)
+    if keep_capture:
+        log.info("config has a non-sunset profile; capture unit will not be stopped for idle placement")
     controller = SystemctlController()
     log.info("supervisor up; camera_id=%s", config["camera_id"])
     seen_ids: set = set()
@@ -132,6 +166,7 @@ def main(interval_s: float = 30.0) -> None:
                 status_source=lambda: result,
                 controller=controller,
                 config_writer=lambda lat, lng: write_location(CONFIG_PATH, lat, lng),
+                keep_capture=keep_capture,
             )
             log.info("mode=%s placement_verb=%s", mode, verb)
             if verb == "SUN_SELF_REFINE":

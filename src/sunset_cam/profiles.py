@@ -66,6 +66,15 @@ class AbsoluteWindow:
         _require_aware(now)
         return self.start <= now < self.end
 
+    def next_boundary(self, now: datetime) -> datetime | None:
+        """The next instant this window opens or closes, or None if it never will."""
+        _require_aware(now)
+        if now < self.start:
+            return self.start
+        if now < self.end:
+            return self.end
+        return None
+
 
 @dataclass(frozen=True)
 class DailyWindow:
@@ -87,6 +96,16 @@ class DailyWindow:
         if s < e:
             return set(range(s, e))
         return set(range(s, 24 * 60)) | set(range(0, e))
+
+    def next_boundary(self, now: datetime) -> datetime:
+        """The next instant this window opens (if outside) or closes (if inside)."""
+        _require_aware(now)
+        utc = now.astimezone(timezone.utc)
+        target = self.end if self.contains(now) else self.start
+        candidate = utc.replace(hour=target.hour, minute=target.minute, second=0, microsecond=0)
+        if candidate <= utc:
+            candidate += timedelta(days=1)
+        return candidate
 
 
 Window = Union[AbsoluteWindow, DailyWindow]
@@ -260,17 +279,30 @@ def next_tick(now: datetime, interval_s: float) -> datetime:
 def seconds_until_next_capture(profile: Profile, after_work: datetime) -> float:
     """How long to sleep once a capture (and its upload) has finished.
 
-    Aligned profiles wait for the next clock tick. The small lead guards
-    against a timer that wakes a few ms early and would otherwise capture
-    twice for one tick. Unaligned (legacy) profiles sleep a fixed interval
-    after the work, as the Tier 0 loop always did.
+    Aligned profiles wait for the next clock tick, but never past the end of
+    their own window: the loop wakes at the boundary so the next profile can
+    start on time (a 420 s cadence must not sleep through a 01:00 hand-off).
+    The small lead guards against a timer that wakes a few ms early and would
+    otherwise capture twice for one tick. Unaligned (legacy) profiles sleep a
+    fixed interval after the work, as the Tier 0 loop always did.
     """
     if not profile.align_to_clock:
         return profile.interval_s
     lead = timedelta(seconds=min(1.0, profile.interval_s / 10))
-    return max(0.0, (next_tick(after_work + lead, profile.interval_s) - after_work).total_seconds())
+    tick = next_tick(after_work + lead, profile.interval_s)
+    boundary = profile.window.next_boundary(after_work)
+    if boundary is not None and boundary < tick:
+        tick = boundary
+    return max(0.0, (tick - after_work).total_seconds())
 
 
-def idle_poll_s(profiles: list[Profile]) -> float:
-    """How often to re-check for an opening window when none is active."""
-    return min(IDLE_POLL_MAX_S, min(p.interval_s for p in profiles))
+def idle_poll_s(profiles: list[Profile], now: datetime | None = None) -> float:
+    """How long to sleep when no window is open: until the earliest window
+    opens, so the first frame lands on the opening minute, capped so a clock
+    step or a config change is noticed within IDLE_POLL_MAX_S."""
+    if now is None:
+        return IDLE_POLL_MAX_S
+    opens = [b for b in (p.window.next_boundary(now) for p in profiles) if b is not None]
+    if not opens:
+        return IDLE_POLL_MAX_S
+    return max(0.0, min(IDLE_POLL_MAX_S, (min(opens) - now).total_seconds()))

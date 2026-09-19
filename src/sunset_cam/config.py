@@ -95,6 +95,25 @@ def load_config(path: str | Path) -> Config:
     return raw  # type: ignore[return-value]
 
 
+def has_sunset_sink(raw: dict) -> bool:
+    """True if this config sends anything to the sunset app: a legacy config, or a
+    profiles config with at least one ``sunset`` sink. False for a welkin-only
+    camera, which has nothing for the supervisor to supervise."""
+    if "profiles" not in raw:
+        return True
+    return any(isinstance(p, dict) and isinstance(p.get("sink"), dict) and p["sink"].get("kind") == "sunset"
+               for p in raw["profiles"] if isinstance(p, dict))
+
+
+def has_non_sunset_sink(raw: dict) -> bool:
+    """True if any profile posts somewhere other than the sunset app. Such a
+    profile's capture must not be stopped by the sunset placement state."""
+    if "profiles" not in raw:
+        return False
+    return any(isinstance(p, dict) and isinstance(p.get("sink"), dict) and p["sink"].get("kind") != "sunset"
+               for p in raw["profiles"] if isinstance(p, dict))
+
+
 def load_identity(path: str | Path) -> dict:
     """Load the minimal identity for the ONLINE/IDLE loop (register + heartbeat).
 

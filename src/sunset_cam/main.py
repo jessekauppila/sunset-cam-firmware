@@ -61,22 +61,38 @@ def tick(
     capture: Callable[[], bytes] = _capture,
     send: Callable[[dict, Profile, bytes, datetime], dict] = send_frame,
     release: Callable[[], None] = _release,
+    clock_floor: datetime | None = None,
 ) -> float:
-    """One pass of the capture loop. Returns seconds to sleep before the next."""
+    """One pass of the capture loop. Returns seconds to sleep before the next.
+
+    ``clock_floor``: a time the wall clock cannot honestly be before (the config
+    file's mtime). A Pi Zero has no RTC; until NTP steps the clock it reads
+    fake-hwclock's last saved value, and a frame stamped with that time would be
+    stored downstream as truth. Below the floor nothing is captured.
+    """
     now = clock()
+    if clock_floor is not None and now < clock_floor:
+        log.warning("clock reads %s, before %s; waiting for time sync", now.isoformat(), clock_floor.isoformat())
+        return idle_poll_s(profiles)
+
     profile = active_profile(profiles, now)
     if profile is None:
         try:
             release()
         except Exception:  # noqa: BLE001 — releasing an idle camera is best-effort
             pass
-        log.debug("no profile active; polling again in %.0fs", idle_poll_s(profiles))
-        return idle_poll_s(profiles)
+        delay = idle_poll_s(profiles, now)
+        log.debug("no profile active; polling again in %.0fs", delay)
+        return delay
 
     try:
         jpeg = capture()
     except Exception as exc:  # noqa: BLE001
-        log.error("[%s] capture failed: %s", profile.name, exc)
+        log.error("[%s] capture failed: %s; releasing camera", profile.name, exc)
+        try:
+            release()  # drop a wedged camera object rather than reuse it next tick
+        except Exception:  # noqa: BLE001
+            pass
         return seconds_until_next_capture(profile, clock())
 
     try:
@@ -91,6 +107,7 @@ def tick(
 def run(config_path: str | Path) -> int:
     config = load_config(config_path)
     profiles = profiles_from_config(config)
+    clock_floor = datetime.fromtimestamp(Path(config_path).stat().st_mtime, tz=timezone.utc)
 
     logging.basicConfig(
         level=getattr(logging, config["log_level"].upper(), logging.INFO),
@@ -108,7 +125,7 @@ def run(config_path: str | Path) -> int:
     signal.signal(signal.SIGINT, _handle_sigterm)
 
     while not _stop.is_set():
-        _stop.wait(tick(config, profiles, log))
+        _stop.wait(tick(config, profiles, log, clock_floor=clock_floor))
 
     log.info("shutdown signal received; exiting cleanly")
     try:

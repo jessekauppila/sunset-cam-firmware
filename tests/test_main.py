@@ -183,3 +183,70 @@ def test_sigterm_ends_a_long_idle_wait_promptly(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+# --- review findings ------------------------------------------------------------
+
+
+def test_capture_failure_releases_the_camera_so_a_wedged_object_is_not_reused() -> None:
+    rec = Recorder()
+
+    def boom() -> bytes:
+        raise RuntimeError("Camera __init__ sequence did not complete.")
+
+    tick(
+        CLOUD_CFG,
+        profiles_from_config(CLOUD_CFG),
+        LOG,
+        clock=Clock(utc(2026, 9, 18, 20, 5, 0), utc(2026, 9, 18, 20, 5, 1)),
+        capture=boom,
+        send=rec.send,
+        release=rec.release,
+    )
+    assert rec.released == 1
+
+
+def test_a_clock_before_the_floor_captures_nothing_and_waits() -> None:
+    # Pi Zero boot clock: fake-hwclock's stale value until NTP steps it.
+    rec = Recorder()
+    stale = utc(2026, 9, 10, 20, 5, 0)  # inside the daily window, but a week ago
+    delay = tick(
+        CLOUD_CFG,
+        profiles_from_config(CLOUD_CFG),
+        LOG,
+        clock=Clock(stale),
+        capture=rec.capture,
+        send=rec.send,
+        release=rec.release,
+        clock_floor=utc(2026, 9, 18, 12, 0),
+    )
+    assert rec.sent == []
+    assert 0 < delay <= 30
+
+
+def test_idle_wake_lands_on_the_windows_opening_minute() -> None:
+    rec = Recorder()
+    delay = run_tick(CLOUD_CFG, Clock(utc(2026, 9, 18, 15, 59, 45)), rec)
+    assert delay == pytest.approx(15.0)
+    assert rec.sent == []
+
+
+def test_last_tick_before_a_hand_off_wakes_at_the_boundary() -> None:
+    cfg = {
+        "camera_id": 7,
+        "api_base": "https://x",
+        "device_token": "t",
+        "profiles": [
+            {"name": "clouds", "window": {"daily_utc": {"start": "16:00", "end": "01:00"}}, "interval_s": 420,
+             "sink": {"kind": "welkin", "url": "http://h:8000"}},
+            {"name": "sunset", "window": {"daily_utc": {"start": "01:00", "end": "03:30"}}, "interval_s": 60,
+             "sink": {"kind": "sunset", "phase": "sunset", "window_id": "w"}},
+        ],
+    }
+    rec = Recorder()
+    delay = run_tick(cfg, Clock(utc(2026, 9, 19, 0, 58, 0), utc(2026, 9, 19, 0, 58, 2)), rec)
+    assert rec.sent == [("clouds", utc(2026, 9, 19, 0, 58, 0))]
+    assert delay == pytest.approx(118.0)  # to 01:00:00, not to 01:05:00
+    delay = run_tick(cfg, Clock(utc(2026, 9, 19, 1, 0, 0), utc(2026, 9, 19, 1, 0, 1)), rec)
+    assert rec.sent[-1] == ("sunset", utc(2026, 9, 19, 1, 0, 0))
+    assert delay == pytest.approx(59.0)

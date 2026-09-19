@@ -205,6 +205,59 @@ def test_next_tick_aligns_to_the_clock() -> None:
     assert next_tick(utc(2026, 9, 18, 23, 58, 0), 600) == utc(2026, 9, 19, 0, 0, 0)
 
 
-def test_idle_poll_never_exceeds_the_fastest_profile() -> None:
-    assert idle_poll_s(profiles_from_config(legacy_cfg())) == 1.0
+def test_idle_poll_is_capped_and_independent_of_cadence() -> None:
+    # A 1 s legacy profile must not make the idle loop spin once a second all day.
+    assert idle_poll_s(profiles_from_config(legacy_cfg())) == 30.0
     assert idle_poll_s(profiles_from_config({"camera_id": 1, "profiles": [clouds()]})) == 30.0
+    # Legacy absolute window: before it opens, sleep to the opening (capped).
+    [legacy] = profiles_from_config(legacy_cfg())
+    assert idle_poll_s([legacy], utc(2026, 5, 3, 0, 59, 50)) == pytest.approx(10.0)
+    # After it has closed for good there is nothing to wait for: cap.
+    assert idle_poll_s([legacy], utc(2026, 5, 4, 0, 0)) == 30.0
+
+
+# --- window boundaries and window-aware sleeps (review findings 2) ------------
+
+from sunset_cam.profiles import seconds_until_next_capture  # noqa: E402
+
+
+def test_daily_window_next_boundary_is_end_when_inside_and_start_when_outside() -> None:
+    w = DailyWindow(start=time(16, 0), end=time(1, 0))
+    assert w.next_boundary(utc(2026, 9, 18, 20, 0)) == utc(2026, 9, 19, 1, 0)
+    assert w.next_boundary(utc(2026, 9, 19, 0, 30)) == utc(2026, 9, 19, 1, 0)
+    assert w.next_boundary(utc(2026, 9, 19, 1, 0)) == utc(2026, 9, 19, 16, 0)
+    assert w.next_boundary(utc(2026, 9, 19, 12, 0)) == utc(2026, 9, 19, 16, 0)
+
+
+def test_absolute_window_next_boundary() -> None:
+    w = AbsoluteWindow(start=utc(2026, 9, 20, 16, 0), end=utc(2026, 9, 20, 20, 0))
+    assert w.next_boundary(utc(2026, 9, 20, 15, 0)) == utc(2026, 9, 20, 16, 0)
+    assert w.next_boundary(utc(2026, 9, 20, 17, 0)) == utc(2026, 9, 20, 20, 0)
+    assert w.next_boundary(utc(2026, 9, 20, 21, 0)) is None
+
+
+def test_sleep_never_crosses_the_windows_end_even_when_the_cadence_would() -> None:
+    # 420 s ticks land at 00:58:00 and 01:05:00; the window ends 01:00. The
+    # loop must wake at 01:00 so a sunset profile starting then is not late.
+    [p] = profiles_from_config({"camera_id": 1, "profiles": [clouds(interval_s=420)]})
+    after_work = utc(2026, 9, 19, 0, 58, 2)
+    assert seconds_until_next_capture(p, after_work) == pytest.approx(118.0)
+
+
+def test_sleep_inside_the_window_is_the_aligned_tick() -> None:
+    [p] = profiles_from_config({"camera_id": 1, "profiles": [clouds()]})
+    assert seconds_until_next_capture(p, utc(2026, 9, 18, 20, 5, 2)) == pytest.approx(298.0)
+
+
+def test_idle_poll_sleeps_exactly_to_the_next_opening_when_it_is_close() -> None:
+    profiles = profiles_from_config({"camera_id": 1, "profiles": [clouds()]})
+    assert idle_poll_s(profiles, utc(2026, 9, 18, 15, 59, 45)) == pytest.approx(15.0)
+    assert idle_poll_s(profiles, utc(2026, 9, 18, 12, 0)) == 30.0
+    assert idle_poll_s(profiles) == 30.0
+
+
+def test_idle_poll_with_two_profiles_targets_the_earliest_opening() -> None:
+    cfg = {"camera_id": 1, "api_base": "https://x", "device_token": "t", "profiles": [clouds(), sunset_profile()]}
+    profiles = profiles_from_config(cfg)
+    # Between 04:00 and 16:00 nothing is open; at 15:59:50 the clouds window is 10 s away.
+    assert idle_poll_s(profiles, utc(2026, 9, 18, 15, 59, 50)) == pytest.approx(10.0)

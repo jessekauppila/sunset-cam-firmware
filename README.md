@@ -57,7 +57,20 @@ bash scripts/configure.sh \
   --profiles-file config/profiles.clouds.example.json
 ```
 
-It validates with the firmware's own loader before writing. To check a
+It validates with the firmware's own loader before writing, and refuses to write a
+profiles config it cannot validate (`--force` overrides).
+
+Two things a cloud-only device needs to know:
+
+- **Supervisor.** `sunset-cam-supervisor.service` exists to follow the sunset app's
+  placement state. On a config with no `sunset` sink it logs "nothing to supervise" and
+  exits 0; disable it (`sudo systemctl disable --now sunset-cam-supervisor.service`).
+  On a device running both profiles it will not stop the capture unit for idle
+  placement, but aiming still takes the camera.
+- **Clock.** A Pi Zero has no RTC. `sunset-cam.service` waits for `time-sync.target`
+  (enable `systemd-time-wait-sync.service` on the image), and the loop refuses to
+  capture while the clock reads earlier than the config file's mtime.
+ To check a
 config by hand: `python -m sunset_cam.config /path/to/config.json`. Shape and
 rules: `src/sunset_cam/profiles.py`. Examples: `config/profiles.*.example.json`.
 

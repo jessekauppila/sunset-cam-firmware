@@ -32,7 +32,10 @@
 #   --dry-run                  (print the new config, don't write)
 #   --validate-python <path>   (interpreter with sunset_cam installed, used to
 #                               validate before writing; default
-#                               /opt/sunset-cam/.venv/bin/python, skipped if absent)
+#                               /opt/sunset-cam/.venv/bin/python)
+#   --force                    (write a profiles config even if the validator
+#                               cannot run; the service then validates at start
+#                               and crash-loops if the config is bad)
 
 set -euo pipefail
 
@@ -52,6 +55,7 @@ LOG_LEVEL=""
 CAPTURE_INTERVAL_S=""
 PROFILES_FILE=""
 VALIDATE_PY="/opt/sunset-cam/.venv/bin/python"
+FORCE=0
 RESTART=1
 DRY_RUN=0
 
@@ -70,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --capture-interval-s)   CAPTURE_INTERVAL_S="$2"; shift 2 ;;
     --profiles-file)        PROFILES_FILE="$2"; shift 2 ;;
     --validate-python)      VALIDATE_PY="$2"; shift 2 ;;
+    --force)                FORCE=1; shift ;;
     --config)               CONFIG_PATH="$2"; shift 2 ;;
     --no-restart)           RESTART=0; shift ;;
     --dry-run)              DRY_RUN=1; shift ;;
@@ -89,7 +94,7 @@ done
 # SSH with terminal-paste mangling. Pass values via env to keep quoting sane.
 export CONFIG_PATH CAMERA_ID DEVICE_TOKEN API_BASE PHASE WINDOW_ID \
        WINDOW_START WINDOW_END FROM_NOW_MIN DURATION_MIN \
-       LOG_LEVEL CAPTURE_INTERVAL_S DRY_RUN PROFILES_FILE VALIDATE_PY
+       LOG_LEVEL CAPTURE_INTERVAL_S DRY_RUN PROFILES_FILE VALIDATE_PY FORCE
 
 python3 - <<'PYEOF'
 import json, os, subprocess, sys, tempfile
@@ -130,6 +135,8 @@ if profiles_file:
         loaded = loaded.get("profiles")
     if not isinstance(loaded, list):
         sys.exit("--profiles-file must hold a list of profiles or {\"profiles\": [...]}")
+    if not loaded:
+        sys.exit("--profiles-file holds an empty list; a device needs at least one profile")
     cfg["profiles"] = loaded
 
 start = env("WINDOW_START")
@@ -211,6 +218,10 @@ if validate_py and Path(validate_py).exists():
     if res.returncode != 0:
         sys.exit(res.stderr.strip() or f"validator exited {res.returncode}")
     print(res.stdout.strip())
+elif "profiles" in cfg and os.environ.get("FORCE") != "1":
+    sys.exit(f"refusing to write a profiles config without validating it: "
+             f"{validate_py or '(no validator)'} not found. Install the firmware "
+             f"first (install.sh), pass --validate-python <interpreter>, or --force.")
 else:
     print(f"note: validator {validate_py or '(none)'} not found; skipped "
           f"(the service validates at start)")
