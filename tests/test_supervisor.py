@@ -145,3 +145,71 @@ def test_online_placement_decision_idle_status_gives_idle_and_await():
     mode, verb = online_placement_decision(parsed)
     assert mode == "idle"
     assert verb == "AWAIT"
+
+
+# --- non-sunset profiles (review finding 3) --------------------------------------
+
+import json  # noqa: E402
+
+from sunset_cam import supervisor as sup  # noqa: E402
+from sunset_cam.config import has_non_sunset_sink, has_sunset_sink  # noqa: E402
+
+WELKIN_ONLY = {"camera_id": 7, "profiles": [
+    {"name": "clouds", "window": {"daily_utc": {"start": "16:00", "end": "01:00"}}, "interval_s": 300,
+     "sink": {"kind": "welkin", "url": "http://h:8000"}}]}
+BOTH = {**WELKIN_ONLY, "device_token": "t", "api_base": "https://x", "profiles": WELKIN_ONLY["profiles"] + [
+    {"name": "sunset", "window": {"daily_utc": {"start": "01:00", "end": "03:00"}}, "interval_s": 1,
+     "sink": {"kind": "sunset", "phase": "sunset", "window_id": "w"}}]}
+LEGACY = {"camera_id": 1, "device_token": "t", "api_base": "https://x", "phase": "sunset", "window_id": "w",
+          "capture_window_start_utc": "2026-05-03T01:00:00Z", "capture_window_end_utc": "2026-05-03T02:00:00Z",
+          "capture_interval_s": 1.0}
+
+
+def test_sink_helpers_classify_configs() -> None:
+    assert (has_sunset_sink(LEGACY), has_non_sunset_sink(LEGACY)) == (True, False)
+    assert (has_sunset_sink(WELKIN_ONLY), has_non_sunset_sink(WELKIN_ONLY)) == (False, True)
+    assert (has_sunset_sink(BOTH), has_non_sunset_sink(BOTH)) == (True, True)
+
+
+class _Ctl:
+    def __init__(self) -> None:
+        self.modes: list[str] = []
+
+    def set_mode(self, mode: str) -> None:
+        self.modes.append(mode)
+
+
+def test_run_once_keeps_capture_running_when_placement_is_idle_and_a_welkin_profile_exists() -> None:
+    ctl = _Ctl()
+    mode = sup.run_once(lambda: {"placement_status": "awaiting_location"}, ctl, lambda *a: None, keep_capture=True)
+    assert mode == "capture" and ctl.modes == ["capture"]
+    # Without the flag, today's behaviour: idle stops the capture unit.
+    ctl = _Ctl()
+    assert sup.run_once(lambda: {"placement_status": "awaiting_location"}, ctl, lambda *a: None) == "idle"
+
+
+def test_run_once_keep_capture_still_yields_to_aiming() -> None:
+    ctl = _Ctl()
+    mode = sup.run_once(lambda: {"placement_status": "awaiting_aim", "lat": 1.0, "lng": 2.0}, ctl, lambda *a: None,
+                        keep_capture=True)
+    assert mode == "aiming"
+
+
+def test_main_exits_cleanly_on_a_welkin_only_config_instead_of_crash_looping(tmp_path, monkeypatch, caplog) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps(WELKIN_ONLY))
+    monkeypatch.setattr(sup, "CONFIG_PATH", str(cfg))
+    started = []
+    monkeypatch.setattr(sup, "SystemctlController", lambda: started.append("controller"))
+    with caplog.at_level("INFO"):
+        sup.main(interval_s=0)  # returns instead of raising ConfigError
+    assert started == []
+    assert "nothing to supervise" in caplog.text
+
+
+def test_main_still_fails_loudly_when_identity_is_missing_on_a_sunset_config(tmp_path, monkeypatch) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"camera_id": 1, "profiles": BOTH["profiles"]}))  # sunset sink, no token
+    monkeypatch.setattr(sup, "CONFIG_PATH", str(cfg))
+    with pytest.raises(sup.ConfigError):
+        sup.main(interval_s=0)

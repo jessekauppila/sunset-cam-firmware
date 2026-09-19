@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "name": "clouds",
+      "window": { "daily_utc": { "start": "16:00", "end": "01:00" } },
+      "interval_s": 300,
+      "sink": { "kind": "welkin", "url": "http://192.168.1.20:8000" }
+    },
+    {
+      "name": "sunset",
+      "window": { "daily_utc": { "start": "01:00", "end": "03:30" } },
+      "interval_s": 60,
+      "sink": { "kind": "sunset", "phase": "sunset", "window_id": "cam3-daily-sunset" }
+    }
+  ]
+}
