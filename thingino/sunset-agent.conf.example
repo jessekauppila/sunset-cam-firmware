@@ -1,0 +1,39 @@
+# /etc/sunset-agent.conf — copy this, fill it in, keep it private (it holds the token).
+# Shell syntax: KEY="value", no spaces around "=".
+
+API_BASE="https://sunrisesunset.studio"
+
+# From the parent repo's scripts/tier0-create-camera.sh (or /api/cameras/provision).
+CAMERA_ID=""
+DEVICE_TOKEN=""
+
+# Only for claim-code onboarding (provision endpoint). Leave empty for tier0 cameras.
+# HARDWARE_ID must then match what the camera was provisioned with.
+CLAIM_CODE=""
+HARDWARE_ID=""
+
+# Where the camera is, until the server supplies a location. Decimal degrees.
+LAT=""
+LNG=""
+
+# Which way it points, typed by you (these cameras have no tilt sensor).
+# Compass bearing, 0=N 90=E 180=S 270=W; tilt in degrees above level.
+AZIMUTH_DEG=""
+TILT_DEG="0"
+
+# sunrise | sunset | both. A placement set on the server overrides this.
+PHASE="sunset"
+
+# Seconds between frames inside a window. The Pi uses 1; Wi-Fi cameras should not.
+INTERVAL_S=20
+
+# 1 = wait until the server says placement is ready. 0 = capture as soon as
+# LAT/LNG are known (handy for a bench test; tier0 cameras still need AZIMUTH_DEG
+# for the server to call them ready).
+REQUIRE_PLACEMENT=1
+
+# Minutes of capture around each event.
+SUNSET_BEFORE_MIN=45
+SUNSET_AFTER_MIN=30
+SUNRISE_BEFORE_MIN=30
+SUNRISE_AFTER_MIN=45
