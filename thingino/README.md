@@ -130,6 +130,24 @@ followed by an `uploaded …` line every ~20 s.
 | Nothing uploads, no `window open` | Check `date -u`; run `sunset-agent windows`. |
 | Dark or black frames | Night mode/IR cut kicked in at dusk. Turn off Thingino's automatic day/night switching (or its sunset-based dusk2dawn) for this camera. |
 
+## Finding the status light (`find-status-led`)
+Thingino's profiles for the Wyze v3 and Sonoff S2/B1P list only the IR LEDs and
+the IR-cut filter, not the front status light. To use that light for feedback,
+first find its pin. Copy the script over and run it facing the camera:
+```sh
+ssh $CAM 'cat > /usr/sbin/find-status-led && chmod +x /usr/sbin/find-status-led' < thingino/find-status-led
+ssh -t $CAM find-status-led          # -t: it asks you y/N after each pin
+```
+It first prints the pins the kernel has claimed (an LED-like name there is a
+shortcut), then blinks each unused pin three times, restores it, and asks
+whether a light blinked. It skips the pins in `/etc/thingino.json` and anything
+claimed by a driver, and never writes to flash. Toggling an unknown pin can
+still drop Wi-Fi or reboot the camera: power-cycle and rerun with
+`--from <last pin + 1>` (the last pin is saved in `/root/find-status-led.last`).
+When it finds the light, it prints the line to add to `thingino.json` and the
+`STATUS_LED_PIN` for the agent's config. Please report the pin upstream to
+Thingino too.
+
 ## Known gaps
 - **Aim** comes from the phone app (path B), or is typed by hand (path A). Cameras on their own swivel stand, rather than a window mount, still need a phone-aim step in the app (issue #499 in the app repo).
 - **Windows** are computed on the camera. The plan is for the server to send the next window in the heartbeat reply; the agent will prefer that when present (issue in the app repo).
