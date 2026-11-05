@@ -1,0 +1,36 @@
+#!/bin/sh
+# Thingino init script for the Sunrise/Sunset agent.
+# Install to /etc/init.d/S99sunset-agent (chmod +x). Starts after networking and ntpd.
+
+DAEMON="/usr/sbin/sunset-agent"
+PIDFILE="/run/sunset-agent.pid"
+CONF="/etc/sunset-agent.conf"
+
+start() {
+	echo "Starting sunset-agent"
+	if [ ! -x "$DAEMON" ] || [ ! -f "$CONF" ]; then
+		echo "sunset-agent: $DAEMON or $CONF missing, not starting" >&2
+		return 1
+	fi
+	start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -- run
+}
+
+stop() {
+	echo "Stopping sunset-agent"
+	start-stop-daemon -K -p "$PIDFILE" 2>/dev/null
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+start) start ;;
+stop) stop ;;
+restart)
+	stop
+	sleep 1
+	start
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+	;;
+esac
