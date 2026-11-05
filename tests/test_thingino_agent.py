@@ -112,6 +112,7 @@ def _write_conf(tmp_path: Path, base: str, **extra) -> Path:
         "DEVICE_TOKEN": TOKEN,
         "CLAIM_CODE": "SUNSET-TEST-0001",
         "HARDWARE_ID": "thingino-test",
+        "CAMERA_MODEL": "wyze-v3",
         "AZIMUTH_DEG": "265",
         "TILT_DEG": "3",
         "INTERVAL_S": "1",
@@ -144,6 +145,7 @@ def test_onboarding_then_capture(server, tmp_path):
     kinds = [c[0] for c in app.calls]
     assert kinds[0] == "register"
     assert app.calls[0][1]["hardware_id"] == "thingino-test"
+    assert app.calls[0][1]["capabilities"]["camera_model"] == "wyze-v3"
     assert ("placement", {"azimuth_deg": 265, "tilt_deg": 3}) in app.calls
     # No frame may go up before placement is ready.
     assert kinds.index("snapshot") > kinds.index("placement")

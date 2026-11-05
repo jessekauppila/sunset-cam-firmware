@@ -7,6 +7,10 @@ API_BASE="https://sunrisesunset.studio"
 CAMERA_ID=""
 DEVICE_TOKEN=""
 
+# Which camera this is: wyze-v3 | sonoff-cam-s2 | sonoff-cam-b1p.
+# The setup app uses it for the camera's field of view and the printed mount.
+CAMERA_MODEL="wyze-v3"
+
 # Only for claim-code onboarding (provision endpoint). Leave empty for tier0 cameras.
 # HARDWARE_ID must then match what the camera was provisioned with.
 CLAIM_CODE=""
@@ -16,7 +20,8 @@ HARDWARE_ID=""
 LAT=""
 LNG=""
 
-# Which way it points, typed by you (these cameras have no tilt sensor).
+# Which way it points. Not needed if you finish setup in the phone app
+# (/setup/<claim code>): the app sends the aim. For a tier0 camera, type it here.
 # Compass bearing, 0=N 90=E 180=S 270=W; tilt in degrees above level.
 AZIMUTH_DEG=""
 TILT_DEG="0"

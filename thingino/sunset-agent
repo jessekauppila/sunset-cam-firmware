@@ -32,6 +32,7 @@ CAMERA_ID=""
 DEVICE_TOKEN=""
 CLAIM_CODE=""            # set for claim-code onboarding; leave empty for tier0 cameras
 HARDWARE_ID=""           # default: thingino-<SoC serial>
+CAMERA_MODEL=""          # wyze-v3 | sonoff-cam-s2 | sonoff-cam-b1p: lets the setup app use this camera's FOV
 LAT=""                   # fallback location until the server supplies one
 LNG=""
 PHASE="sunset"           # sunrise | sunset | both (the server's phase_preference wins)
@@ -83,7 +84,7 @@ hardware_id() {
 }
 
 capabilities_json() {
-	printf '{"device_class":"thingino","firmware_version":"sunset-agent-%s","streaming_modes":["stills"],"upload_modes":["api"],"has_edge_ml":false,"battery_powered":false}' "$AGENT_VERSION"
+	printf '{"device_class":"thingino","camera_model":"%s","has_orientation_sensor":false,"firmware_version":"sunset-agent-%s","streaming_modes":["stills"],"upload_modes":["api"],"has_edge_ml":false,"battery_powered":false}' "$CAMERA_MODEL" "$AGENT_VERSION"
 }
 
 # post_json PATH BODY OUTFILE [auth] -> prints HTTP status ("000" on network failure)

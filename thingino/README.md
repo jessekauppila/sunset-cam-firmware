@@ -55,15 +55,32 @@ revision; `ipctool` from OpenIPC will tell you.
    any command that prints a JPEG to stdout.
 
 ### 2. Create the camera in the app
-From the parent repo (this writes to production):
+Two ways. **B is the real flow**; A is a quicker bench test.
+
+**A. Tier0 (quick, aim typed by hand).** From the parent repo (writes to production):
 ```sh
 DATABASE_URL=... ./scripts/tier0-create-camera.sh \
   --hardware-id thingino-<soc -s output> \
   --lat 48.75 --lng -122.48 --timezone America/Los_Angeles \
   --title "Thingino test 1" --phase sunset
 ```
-It prints `camera_id` and `device_token` (shown once) and creates the `webcams`
-pairing, so snapshots won't 404.
+It prints `camera_id` and `device_token` (shown once). Put them in the config
+with `LAT`, `LNG` and `AZIMUTH_DEG`.
+
+**B. Claim code + phone setup (aim from the phone, printed mount).**
+```sh
+curl -sS -X POST https://sunrisesunset.studio/api/cameras/provision \
+  -H "Authorization: Bearer $CRON_SECRET" -H 'Content-Type: application/json' \
+  -d '{"hardware_id":"thingino-<soc -s output>","device_class":"thingino-wyze-v3","label":"wyze-1"}'
+```
+It returns `camera_id`, `claim_code` and `device_token` (shown once). Put all
+three in the config, with `HARDWARE_ID` exactly as provisioned and
+`CAMERA_MODEL="wyze-v3"`. Leave `AZIMUTH_DEG` empty. Then open
+`https://sunrisesunset.studio/setup/<claim_code>` on your phone. The app knows
+the camera model, so it uses this camera's field of view, measures your window,
+and tells you which wedge to print: `hardware/window-wedge-mount.scad` with
+`wedge_deg`, `tall_end` and `camera` filled in. Once you submit, the camera's
+next heartbeat says `ready` and capture starts on its own.
 
 ### 3. Install the agent
 From this repo (dropbear may not have `scp`, so pipe through `ssh`):
@@ -87,7 +104,8 @@ Check the `windows` event time against a sunset table for your location.
 
 ### 5. Mount it and run
 Mount it facing the sunset with a clear horizon (no windows, no sidewalks in
-frame), set `AZIMUTH_DEG` (a phone compass is fine), then:
+frame): in the printed window mount (path B), or anywhere with `AZIMUTH_DEG`
+set from a phone compass (path A). Then:
 ```sh
 /etc/init.d/S99sunset-agent start
 logread -f | grep sunset-agent
@@ -113,7 +131,7 @@ followed by an `uploaded …` line every ~20 s.
 | Dark or black frames | Night mode/IR cut kicked in at dusk. Turn off Thingino's automatic day/night switching (or its sunset-based dusk2dawn) for this camera. |
 
 ## Known gaps
-- **Aim** is typed by hand. The setup wizard should collect it from the phone for cameras with no tilt sensor (tracked as an issue in the app repo).
+- **Aim** comes from the phone app (path B), or is typed by hand (path A). Cameras on their own swivel stand, rather than a window mount, still need a phone-aim step in the app (issue #499 in the app repo).
 - **Windows** are computed on the camera. The plan is for the server to send the next window in the heartbeat reply; the agent will prefer that when present (issue in the app repo).
 - **`window_id`** uses the UTC date of the sun event, so a Pacific evening sunset carries the next day's date.
 - **Packaging**: for more than a few cameras, bake the agent and init script into a custom Thingino image (`user/common/overlay/` in the Thingino build) and read the config from the SD card.
