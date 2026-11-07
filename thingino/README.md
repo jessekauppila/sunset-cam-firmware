@@ -37,11 +37,14 @@ a reboot, and its frames get scored like any Pi frame.
 ### 0. Pick the camera
 A **Wyze Cam v3** or **Sonoff CAM-S2**: both install Thingino from an SD card,
 no case opening. (The Sonoff B1P is the bulk candidate, but its SD install
-isn't confirmed yet, so test it second.) Note the exact model and board
-revision; `ipctool` from OpenIPC will tell you.
+has one now but can only be recovered with a flash programmer, so test it
+second.) The Wyze v3 installer picks the board variant itself; note which
+image it chose after first boot (`/etc/os-release`).
 
 ### 1. Flash and check the basics
-1. Flash Thingino with its SD-card installer and finish its setup (Wi-Fi, root
+1. Write the installer to an SD card with `thingino/prepare-sd wyze-cam-3`
+   (macOS; `--list` first to see which disks it will accept; `--stage-agent`
+   also puts the agent on the card). Then flash and finish setup (Wi-Fi, root
    password). Enable SSH in the web UI if it isn't on.
 2. SSH in (`ssh root@<camera-ip>`) and check:
    ```sh

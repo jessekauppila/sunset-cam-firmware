@@ -18,9 +18,9 @@ LAN over SSH, and someone standing at the camera.
 
 ## Facts already established (don't re-research)
 
-- **Wyze v3 SD flashing** uses a file named `demo_wcv3.bin` in the root of a FAT32 card (Wyze recommends 32 GB), inserted with the camera unplugged; hold the setup button while plugging in, 3–6 s. Thingino's Wyze v3 installer uses this mechanism; get the installer from https://github.com/wltechblog/thingino-installers and read its notes on stock-firmware versions.
-- **Wyze v3 has several boards**: Thingino profiles `wyze_cam3_t31x_gc2053_atbm6031`, `..._t31al_...`, `..._rtl8189ftv`, `..._rt5370`. Check which one the camera is before choosing an image (installer notes / `ipctool`).
-- **Sonoff box the user has is the CAM-B1P** (outdoor bullet, 2K, 108° H FOV, motorized 180° pan). Thingino profile `sonoff_b1p_t23n_sc2336_atbm6012bx` includes the pan motor (`gpio_pan "54 52 53 64"`, 2000 steps), a white light on GPIO 59, IR850 on 50, SD card detect on 49. **No confirmed SD-card installer for the B1P**; the case has no visible screws (elektroda thread). Don't flash it until an installer is confirmed.
+- **Wyze v3 SD flashing** (corrected 2026-11-07): the current installer is a whole-card image, `wyze-cam-3/wyze-cam-3-sd.zip` in https://github.com/wltechblog/thingino-installers (one `sd.img`: MBR + FAT32 holding Wyze's factory boot file `factory_t31_ZMC6tiIDQN` and three Thingino images). Write it with `thingino/prepare-sd wyze-cam-3`, insert with the camera unplugged, power on, wait 3–4 min for the `THING-…` Wi-Fi. No button press. It backs up the stock firmware to `WYZE_BACKUP_*/combined_backup.bin` on the card (unique per camera; keep it to revert). The image is rebuilt only occasionally, so `sysupgrade -f` after first boot. The older `demo_wcv3.bin`-on-FAT32 method is not what this installer uses.
+- **Wyze v3 has several boards** (`wyze_cam3_t31x_gc2053_atbm6031`, `..._t31al_gc2053_atbm6031`, `..._t31x_gc2053_rtl8189ftv`), but the installer carries all three and picks the matching one itself, so there's nothing to identify before flashing. Record which one it chose after first boot (`/etc/os-release`).
+- **Sonoff box the user has is the CAM-B1P** (outdoor bullet, 2K, 108° H FOV, motorized 180° pan). Thingino profile `sonoff_b1p_t23n_sc2336_atbm6012bx` includes the pan motor (`gpio_pan "54 52 53 64"`, 2000 steps), a white light on GPIO 59, IR850 on 50, SD card detect on 49. **An SD installer for the B1P now exists** (`sonoff-outdoor-b1p/sonoff-outdoor-b1p-sd.zip`, with a video; power it from a plain power-only USB-C cable; it backs up the stock firmware to `backup/`). Sonoff has disabled the easy unbrick paths, so a failed flash needs a CH341A programmer; the case has no visible screws (elektroda thread). Still flash it last.
 - Thingino's Wyze v3 and Sonoff profiles map **no status LED** (only IR + IR-cut); that's why `find-status-led` exists.
 - Thingino tools available on-camera: `curl`, `jct` (JSON), `prudyntctl snapshot -c 0` (JPEG to stdout), `gpio set|info|list`, `crond`, `sysupgrade`, writable overlay root.
 - App side: a camera needs a `cameras` row + paired `webcams` row. Quick path: `scripts/tier0-create-camera.sh` (prod DB). Real path: `POST /api/cameras/provision` (CRON_SECRET) → claim code + token → phone wizard `/setup/<claim>` → `pre-register` sends aim → heartbeat says `ready`.
@@ -28,8 +28,8 @@ LAN over SSH, and someone standing at the camera.
 ## Plan
 
 ### Phase 1: Wyze v3 on the bench (do first)
-1. Identify the board variant; download the matching Thingino installer.
-2. Write `thingino/prepare-sd` (macOS + Linux): find the SD card safely (refuse internal disks, confirm by size/name), format FAT32, copy the right installer, and optionally stage `sunset-agent`, `S99sunset-agent` and a filled-in `sunset-agent.conf` for copying after first boot. Never `dd` to a guessed device.
+1. ~~Identify the board variant~~ (not needed, see above); the installer is `wyze-cam-3-sd.zip`.
+2. Done: `thingino/prepare-sd` (macOS only) downloads the installer, writes it to a card it has checked is removable, after you type the disk id, verifies the write, and can stage the agent (`--stage-agent`, `--conf`). Linux support not written.
 3. Flash, finish Thingino setup (Wi-Fi, root password, SSH), run the checks in `thingino/README.md` step 1.
 4. Run `find-status-led`; record the pin.
 5. Create the camera (tier0 first), install the agent, run `sunset-agent heartbeat`, `snap`, `windows`; then a full sunset window. Pass criteria are in `thingino/README.md`.
