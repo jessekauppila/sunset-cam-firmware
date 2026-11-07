@@ -1,0 +1,267 @@
+#!/bin/sh
+# prepare-sd: write a Thingino SD-card installer to an SD card (macOS).
+#
+# The installers from https://github.com/wltechblog/thingino-installers are
+# whole-card images (an MBR + one FAT32 partition holding the factory boot file
+# and the firmware), so this images the card rather than formatting and copying.
+#
+# Usage:
+#   thingino/prepare-sd --list
+#   thingino/prepare-sd [options] <model | installer.zip | sd.img>
+#
+#   model                  e.g. wyze-cam-3, sonoff-outdoor-b1p: downloads
+#                          <model>/<model>-sd.zip from thingino-installers
+#   --disk diskN           the card to write (needed if more than one qualifies)
+#   --stage-agent          after writing, copy sunset-agent, its init script,
+#                          find-status-led and an install script to sunset/ on
+#                          the card
+#   --conf FILE            also stage FILE (a filled-in sunset-agent.conf);
+#                          implies --stage-agent
+#   --refresh              re-download the installer even if cached
+#   --list                 show every disk and why it is or isn't writable; writes nothing
+#
+# Safety: only whole, removable, non-virtual disks up to 256 GB that don't hold
+# the running system qualify; the built-in SD slot counts (it reports itself as
+# internal). Nothing is written until you type the disk's identifier.
+set -eu
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+INSTALLERS_URL=${PREPARE_SD_INSTALLERS_URL:-https://github.com/wltechblog/thingino-installers/raw/main}
+CACHE=${PREPARE_SD_CACHE:-$HOME/Library/Caches/sunset-cam/thingino-installers}
+MAX_BYTES=$((256 * 1000 * 1000 * 1000))
+
+die() { printf 'prepare-sd: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+usage() { sed -n '2,/^set -eu/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# ---- disk inspection ---------------------------------------------------------
+
+# key <plist-file> <key>: a scalar from a diskutil plist, empty if absent.
+key() { plutil -extract "$2" raw -o - "$1" 2>/dev/null || true; }
+
+# whole_disks: identifiers of every whole disk diskutil knows, one per line.
+whole_disks() {
+	diskutil list -plist | plutil -extract WholeDisks json -o - - |
+		tr -d '[]" ' | tr ',' '\n' | grep -E '^disk[0-9]+$' || true
+}
+
+# system_disks: whole disks behind the running system ("/").
+system_disks() {
+	t=$(mktemp)
+	diskutil info -plist / >"$t"
+	key "$t" ParentWholeDisk
+	i=0
+	while s=$(plutil -extract "APFSPhysicalStores.$i.APFSPhysicalStore" raw -o - "$t" 2>/dev/null); do
+		printf '%s\n' "$s" | sed -E 's/s[0-9]+$//'
+		i=$((i + 1))
+	done
+	rm -f "$t"
+}
+
+# check <disk>: sets DESC (a one-line description), SIZE (bytes) and REASON
+# (empty if the disk may be written, otherwise why not).
+check() {
+	d=$1 t=$(mktemp)
+	DESC='' REASON='' SIZE=0
+	if ! diskutil info -plist "$d" >"$t" 2>/dev/null; then
+		REASON='diskutil cannot read it'
+		rm -f "$t"
+		return
+	fi
+	internal=$(key "$t" Internal)
+	removable=$(key "$t" RemovableMedia)
+	[ -n "$removable" ] || removable=$(key "$t" Removable)
+	kind=$(key "$t" VirtualOrPhysical)
+	bus=$(key "$t" BusProtocol)
+	whole=$(key "$t" WholeDisk)
+	size=$(key "$t" TotalSize)
+	[ -n "$size" ] || size=$(key "$t" Size)
+	name=$(key "$t" MediaName)
+	rm -f "$t"
+	case $size in '' | *[!0-9]*) size=0 ;; esac
+	SIZE=$size
+	DESC=$(printf '%s  %s GB  %s  "%s"' "$d" "$(awk -v b="$size" 'BEGIN{printf "%.1f", b/1e9}')" "${bus:-?}" "${name:-?}")
+
+	if [ "$d" = disk0 ] || printf '%s\n' "$SYSTEM_DISKS" | grep -qx "$d"; then
+		REASON='holds the running system'
+	elif [ "$whole" != true ]; then
+		REASON='not a whole disk'
+	elif [ "$kind" = Virtual ]; then
+		REASON='virtual disk (disk image, APFS container or RAM disk)'
+	elif [ "$removable" != true ]; then
+		REASON='not removable media (internal or external fixed drive)'
+	elif [ "$internal" = true ] && [ "$bus" != 'Secure Digital' ]; then
+		REASON="internal device on the $bus bus"
+	elif [ "$size" -le 0 ]; then
+		REASON='no media inserted'
+	elif [ "$size" -gt "$MAX_BYTES" ]; then
+		REASON='larger than 256 GB; not an SD card for a camera'
+	fi
+}
+
+list_disks() {
+	SYSTEM_DISKS=$(system_disks)
+	CANDIDATES=''
+	for d in $(whole_disks); do
+		check "$d"
+		if [ -z "$REASON" ]; then
+			say "  OK      $DESC"
+			CANDIDATES="$CANDIDATES $d"
+		else
+			say "  refuse  ${DESC:-$d}: $REASON"
+		fi
+	done
+	CANDIDATES=${CANDIDATES# }
+}
+
+volumes_on() {
+	diskutil list "$1" 2>/dev/null | awk 'NR>2 && $0 ~ /[0-9]+:/ {sub(/^ *[0-9]+: */, ""); print "      " $0}'
+}
+
+# ---- installer ---------------------------------------------------------------
+
+# resolve_image <arg>: sets IMG to a raw .img path (unzipping/downloading as needed).
+resolve_image() {
+	src=$1
+	case $src in
+	*.img) [ -f "$src" ] || die "no such file: $src"; IMG=$src; return ;;
+	*.zip) [ -f "$src" ] || die "no such file: $src"; ZIP=$src ;;
+	*/* | *.*) die "expected a model name, a .zip or a .img: $src" ;;
+	*)
+		ZIP=$CACHE/$src/$src-sd.zip
+		if [ ! -f "$ZIP" ] || [ "$REFRESH" = 1 ]; then
+			mkdir -p "$CACHE/$src"
+			say "Downloading $INSTALLERS_URL/$src/$src-sd.zip"
+			curl -fL --progress-bar -o "$ZIP.part" "$INSTALLERS_URL/$src/$src-sd.zip" ||
+				{ rm -f "$ZIP.part"; die "download failed; check the model name against $INSTALLERS_URL"; }
+			mv "$ZIP.part" "$ZIP"
+		else
+			say "Using cached $ZIP (--refresh to re-download)"
+		fi
+		;;
+	esac
+	say "  sha256 $(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
+	WORK=$(mktemp -d)
+	unzip -q "$ZIP" -d "$WORK" || die "cannot unzip $ZIP"
+	n=$(find "$WORK" -name '*.img' | wc -l | tr -d ' ')
+	[ "$n" = 1 ] || die "$ZIP should hold exactly one .img (found $n)"
+	IMG=$(find "$WORK" -name '*.img')
+}
+
+# ---- staging -----------------------------------------------------------------
+
+stage_agent() {
+	disk=$1 conf=$2
+	diskutil mountDisk "$disk" >/dev/null 2>&1 || true
+	mp='' i=0
+	while [ -z "$mp" ] && [ $i -lt 20 ]; do
+		t=$(mktemp)
+		diskutil info -plist "${disk}s1" >"$t" 2>/dev/null || true
+		mp=$(key "$t" MountPoint)
+		rm -f "$t"
+		[ -n "$mp" ] || { sleep 1; i=$((i + 1)); }
+	done
+	[ -n "$mp" ] || die "the card's FAT32 partition (${disk}s1) did not mount; files not staged"
+	mkdir -p "$mp/sunset"
+	for f in sunset-agent S99sunset-agent find-status-led; do
+		cp -X "$HERE/$f" "$mp/sunset/$f"
+	done
+	cp -X "$HERE/sunset-agent.conf.example" "$mp/sunset/sunset-agent.conf.example"
+	[ -z "$conf" ] || cp -X "$conf" "$mp/sunset/sunset-agent.conf"
+	cat >"$mp/sunset/install.sh" <<'EOS'
+#!/bin/sh
+# Run on the camera after Thingino's first boot: sh /mnt/mmcblk0p1/sunset/install.sh
+set -e
+D=$(cd "$(dirname "$0")" && pwd)
+cp "$D/sunset-agent" /usr/sbin/sunset-agent && chmod 755 /usr/sbin/sunset-agent
+cp "$D/find-status-led" /usr/sbin/find-status-led && chmod 755 /usr/sbin/find-status-led
+cp "$D/S99sunset-agent" /etc/init.d/S99sunset-agent && chmod 755 /etc/init.d/S99sunset-agent
+if [ -f "$D/sunset-agent.conf" ]; then
+	cp "$D/sunset-agent.conf" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
+	rm -f "$D/sunset-agent.conf"   # it holds the device token
+	echo "installed /etc/sunset-agent.conf (removed from the card)"
+elif [ ! -f /etc/sunset-agent.conf ]; then
+	cp "$D/sunset-agent.conf.example" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
+	echo "edit /etc/sunset-agent.conf before starting the agent"
+fi
+echo "installed sunset-agent, find-status-led, S99sunset-agent"
+EOS
+	say "Staged sunset/ on the card (${conf:+with your config, }run 'sh /mnt/mmcblk0p1/sunset/install.sh' on the camera)."
+}
+
+# ---- main --------------------------------------------------------------------
+
+[ "$(uname -s)" = Darwin ] || die "macOS only for now (uses diskutil)"
+
+DISK='' STAGE=0 CONF='' REFRESH=0 LIST=0 SRC=''
+while [ $# -gt 0 ]; do
+	case $1 in
+	-h | --help) usage ;;
+	--list) LIST=1 ;;
+	--refresh) REFRESH=1 ;;
+	--disk) [ $# -ge 2 ] || die "--disk needs a value"; DISK=${2#/dev/}; DISK=${DISK#r}; shift ;;
+	--stage-agent) STAGE=1 ;;
+	--conf) [ $# -ge 2 ] || die "--conf needs a file"; CONF=$2; STAGE=1; shift ;;
+	-*) die "unknown option $1 (see --help)" ;;
+	*) [ -z "$SRC" ] || die "only one installer, please"; SRC=$1 ;;
+	esac
+	shift
+done
+[ -z "$CONF" ] || [ -f "$CONF" ] || die "no such config: $CONF"
+
+say "Disks:"
+list_disks
+[ "$LIST" = 0 ] || exit 0
+[ -n "$SRC" ] || usage 2
+
+if [ -n "$DISK" ]; then
+	case " $CANDIDATES " in
+	*" $DISK "*) ;;
+	*) check "$DISK"; die "refusing $DISK: ${REASON:-not found}" ;;
+	esac
+else
+	# shellcheck disable=SC2086 # split the list on purpose
+	set -- $CANDIDATES
+	[ $# -gt 0 ] || die "no SD card found. Insert one (or use a USB reader) and rerun; --list shows why each disk was refused."
+	[ $# -eq 1 ] || die "several cards qualify ($CANDIDATES); pick one with --disk"
+	DISK=$1
+fi
+
+say ""
+say "Installer:"
+WORK=''
+trap '[ -z "$WORK" ] || rm -rf "$WORK"' EXIT
+resolve_image "$SRC"
+img_bytes=$(stat -f %z "$IMG")
+check "$DISK"
+[ -z "$REASON" ] || die "refusing $DISK: $REASON"
+[ "$img_bytes" -le "$SIZE" ] || die "the image ($img_bytes bytes) is bigger than $DISK"
+
+say ""
+say "About to ERASE this disk and write $(basename "$IMG") ($((img_bytes / 1048576)) MB):"
+say "  $DESC"
+volumes_on "$DISK"
+printf 'Type %s to continue, anything else to stop: ' "$DISK"
+read -r answer || answer=''
+[ "$answer" = "$DISK" ] || die "stopped; nothing was written"
+
+diskutil unmountDisk "/dev/$DISK" >/dev/null || die "could not unmount $DISK (close anything using it)"
+say "Writing (sudo will ask for your password; this takes a minute)..."
+sudo dd if="$IMG" of="/dev/r$DISK" bs=1m status=progress
+sync
+
+say "Verifying..."
+if [ $((img_bytes % 1048576)) -eq 0 ]; then
+	bs=1m count=$((img_bytes / 1048576))
+else
+	bs=512 count=$(((img_bytes + 511) / 512))
+fi
+sudo dd if="/dev/r$DISK" bs="$bs" count="$count" 2>/dev/null | head -c "$img_bytes" | cmp -s - "$IMG" ||
+	die "verification FAILED: what's on $DISK doesn't match the image. Try another card."
+say "  card matches the image"
+
+if [ "$STAGE" = 1 ]; then
+	stage_agent "$DISK" "$CONF"
+fi
+diskutil eject "/dev/$DISK" >/dev/null && say "Ejected $DISK. It's ready: put it in the camera (unplugged), then power on."
