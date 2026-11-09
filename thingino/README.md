@@ -15,7 +15,7 @@ streamer control, which writes a JPEG snapshot to stdout).
 |---|---|---|
 | Onboarding | provision → register → heartbeat | same (register only if `CLAIM_CODE` is set) |
 | Aim | MPU6050 gyro reports azimuth/tilt | typed into config, reported once to `/placement` |
-| Capture window | hardcoded UTC times in config (Tier 0) | computed on the camera daily (NOAA almanac, within ~2 min of `astral`) |
+| Capture window | hardcoded UTC times in config (Tier 0) | sent by the server (`next_windows`); worked out on the camera (NOAA almanac, within ~2 min of `astral`) when the server hasn't said |
 | Cadence | 1 fps | `INTERVAL_S`, default 20 s |
 | Mounted upside down | not handled | the setup wizard asks; the agent flips the picture (`image_flip`) |
 | Directives (`wipe_wifi`, logs) | executed | ignored for now |
@@ -205,7 +205,7 @@ Thingino too.
 
 ## Known gaps
 - **Aim** comes from the phone app (path B), or is typed by hand (path A). Cameras on their own swivel stand, rather than a window mount, still need a phone-aim step in the app (issue #499 in the app repo).
-- **Windows** are computed on the camera. The plan is for the server to send the next window in the heartbeat reply; the agent will prefer that when present (issue in the app repo).
-- **`window_id`** uses the UTC date of the sun event, so a Pacific evening sunset carries the next day's date.
+- **Windows** come from the server: each ready heartbeat reply lists the next day and a half of them (`next_windows`), with their ids, and the agent captures only inside those. An empty list means capture nothing, which is how a paused camera stops. If the server stops answering, the agent follows the last list for 24 hours (`SERVER_WINDOWS_MAX_AGE_S`), then works windows out itself. `sunset-agent windows` prints both.
+- **`window_id`** from the server uses the local date of the sun event. The agent's own fallback still uses the UTC date (it doesn't know the timezone), so a Pacific evening sunset captured during a long outage carries the next day's date.
 - **Packaging**: for more than a few cameras, bake the agent and init script into a custom Thingino image (`user/common/overlay/` in the Thingino build) and read the config from the SD card.
 - Directives (`wipe_wifi`, log shipping) and remote updates (`sysupgrade`) aren't handled yet.

@@ -38,6 +38,8 @@ class MockApp:
         self.aimed = False
         self.previews_wanted = 0  # preview frames still wanted by a (pretend) open wizard
         self.rotation = None  # placement.bracket.image_rotation_deg; None = the wizard never asked
+        self.next_windows = None  # the ready reply's next_windows; None = key absent (server doesn't say)
+        self.heartbeat_down = False  # answer heartbeats with 500, as if unreachable
 
     def handler(self):
         app = self
@@ -81,6 +83,8 @@ class MockApp:
                     return self._json(200, {"preview_wanted": app.previews_wanted > 0})
                 if self.path == "/api/cameras/7/heartbeat":
                     app.calls.append(("heartbeat", json.loads(raw)))
+                    if app.heartbeat_down:
+                        return self._json(500, {"error": "down"})
                     if not app.aimed:
                         # Neon serializes NUMERIC as strings; mimic that.
                         body = {"acknowledged_at": "x", "placement_status": "awaiting_aim",
@@ -91,8 +95,10 @@ class MockApp:
                     placement = {"lat": "48.750000", "lng": "-122.480000", "phase_preference": "sunset"}
                     if app.rotation is not None:
                         placement["bracket"] = {"lens": "fixed", "image_rotation_deg": app.rotation}
-                    return self._json(200, {"acknowledged_at": "x", "placement_status": "ready",
-                                            "placement": placement})
+                    reply = {"acknowledged_at": "x", "placement_status": "ready", "placement": placement}
+                    if app.next_windows is not None:
+                        reply["next_windows"] = app.next_windows
+                    return self._json(200, reply)
                 if self.path == "/api/cameras/7/placement":
                     body = json.loads(raw)
                     app.calls.append(("placement", body))
@@ -130,6 +136,7 @@ def _write_conf(tmp_path: Path, base: str, **extra) -> Path:
         "AZIMUTH_DEG": "265",
         "TILT_DEG": "3",
         "INTERVAL_S": "1",
+        "IDLE_SLEEP_S": "1",
         # A day-wide window so the test is always "inside" one.
         "SUNSET_BEFORE_MIN": "1440",
         "SUNSET_AFTER_MIN": "1440",
@@ -398,6 +405,149 @@ def test_does_not_claim_flip_without_prudynt(tmp_path):
     out = _lib(env, "capabilities_json; set_rotation 180; echo; echo rc=$?")
     assert json.loads(out.stdout.splitlines()[0])["image_flip"] is False
     assert out.stdout.splitlines()[-1] == "rc=0"  # nothing to do, not an error
+
+
+def _iso(offset_s: float) -> str:
+    """A UTC timestamp the way the server writes them (JS toISOString)."""
+    t = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=offset_s)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _window(phase, window_id, start_s, end_s):
+    return {"phase": phase, "window_id": window_id, "start_at": _iso(start_s),
+            "event_at": _iso((start_s + end_s) / 2), "end_at": _iso(end_s)}
+
+
+def _snapshots(app):
+    return [c[1] for c in app.calls if c[0] == "snapshot"]
+
+
+def _agent(tmp_path, conf):
+    return subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+
+
+def _stop(proc):
+    proc.terminate()
+    proc.wait(5)
+
+
+def _wait(done, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline and not done():
+        time.sleep(0.2)
+    return done()
+
+
+def _heartbeats(app):
+    return [c[0] for c in app.calls].count("heartbeat")
+
+
+def test_follows_the_servers_window_and_uses_its_id(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    # A sunrise window, on a camera configured for sunsets, with no window of its
+    # own open (zero-length): everything about the capture must come from the server.
+    app.next_windows = [_window("sunrise", "2026-11-08-sunrise-cam7", -600, 600),
+                        _window("sunset", "2026-11-08-sunset-cam7", 30000, 34500)]
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1", SUNSET_BEFORE_MIN="0", SUNSET_AFTER_MIN="0")
+    proc = _agent(tmp_path, conf)
+    assert _wait(lambda: len(_snapshots(app)) >= 2)
+    _stop(proc)
+    snaps = _snapshots(app)
+    assert {s["window_id"] for s in snaps} == {"2026-11-08-sunrise-cam7"}
+    assert {s["phase"] for s in snaps} == {"sunrise"}
+    assert [s["frame_seq"] for s in snaps[:2]] == ["1", "2"]
+
+
+@pytest.mark.parametrize("windows", [
+    [],                                                        # paused, or polar night
+    [("sunset", "2026-11-09-sunset-cam7", 3600, 8100)],        # next one is an hour away
+    [("sunset", "2026-11-07-sunset-cam7", -8100, -3600)],      # only a finished one
+])
+def test_captures_nothing_outside_the_servers_windows(server, tmp_path, windows):
+    """The camera's own maths says a window is open (the test config's are a day
+    wide). The server's list wins."""
+    app, base = server
+    app.aimed = True
+    app.next_windows = [_window(*w) for w in windows]
+    proc = _agent(tmp_path, _write_conf(tmp_path, base, HEARTBEAT_S="1"))
+    assert _wait(lambda: _heartbeats(app) >= 4)
+    _stop(proc)
+    assert _snapshots(app) == []
+
+
+def test_works_windows_out_itself_when_the_server_does_not_say(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    app.next_windows = []          # the server says: nothing
+    proc = _agent(tmp_path, _write_conf(tmp_path, base, HEARTBEAT_S="1"))
+    assert _wait(lambda: _heartbeats(app) >= 3)
+    assert _snapshots(app) == []
+    app.next_windows = None        # then stops saying (an older server, say)
+    assert _wait(lambda: len(_snapshots(app)) >= 1)
+    _stop(proc)
+    assert _snapshots(app)[0]["window_id"].endswith("-sunset-cam7")  # its own id
+
+
+def test_keeps_the_servers_list_through_an_outage_then_falls_back(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    app.next_windows = []
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1", SERVER_WINDOWS_MAX_AGE_S="4")
+    proc = _agent(tmp_path, conf)
+    assert _wait(lambda: _heartbeats(app) >= 2)
+    app.heartbeat_down = True
+    went_down = time.time()
+    assert _wait(lambda: len(_snapshots(app)) >= 1, timeout=20)
+    _stop(proc)
+    # It obeyed the last list ("nothing") for a while after losing the server,
+    # and only then went back to its own windows.
+    assert time.time() - went_down >= 2
+    assert _snapshots(app)[0]["window_id"].endswith("-sunset-cam7")
+
+
+def test_ignores_window_entries_it_cannot_trust(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    good = _window("sunset", "2026-11-08-sunset-cam7", -600, 600)
+    app.next_windows = [
+        _window("sunset", "@/etc/passwd", -600, 600),               # would be read as a file by curl -F
+        _window("sunset", "id;type=text/html", -600, 600),
+        _window("noon", "2026-11-08-noon-cam7", -600, 600),
+        {**good, "window_id": "2026-11-08-local-cam7", "start_at": "2026-11-08T16:00:00-08:00"},  # not UTC
+        good,
+    ]
+    proc = _agent(tmp_path, _write_conf(tmp_path, base, HEARTBEAT_S="1"))
+    assert _wait(lambda: len(_snapshots(app)) >= 2)
+    _stop(proc)
+    assert {s["window_id"] for s in _snapshots(app)} == {"2026-11-08-sunset-cam7"}
+
+
+def test_reads_the_servers_timestamps(tmp_path):
+    env = {**os.environ, "SUNSET_CONF": "/nonexistent", "SUNSET_STATE_DIR": str(tmp_path),
+           "SUNSET_AGENT_LIB": "1"}
+
+    def epoch(s):
+        return subprocess.run(["dash", "-c", f". {AGENT}; iso_epoch '{s}'"], env=env,
+                              capture_output=True, text=True, check=True).stdout
+
+    for stamp in ["2026-11-09T00:09:43.000Z", "2026-11-09T00:09:43Z", "1970-01-01T00:00:00Z",
+                  "2028-02-29T23:59:59.500Z", "2100-03-01T12:00:00Z"]:
+        want = int(dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
+        assert epoch(stamp) == str(want), stamp
+    for bad in ["", "2026-11-09", "2026-11-09T00:09:43", "2026-11-09T00:09:43+01:00", "tomorrow"]:
+        assert epoch(bad) == "", bad
+
+
+def test_default_padding_matches_the_servers(tmp_path):
+    """Sunrise 45 before / 30 after, sunset 30 before / 45 after (device-protocol §9.1)."""
+    env = {**os.environ, "SUNSET_CONF": "/nonexistent", "SUNSET_STATE_DIR": str(tmp_path),
+           "SUNSET_AGENT_LIB": "1"}
+    out = subprocess.run(
+        ["dash", "-c", f'. {AGENT}; echo "$SUNRISE_BEFORE_MIN $SUNRISE_AFTER_MIN $SUNSET_BEFORE_MIN $SUNSET_AFTER_MIN"'],
+        env=env, capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["45", "30", "30", "45"]
 
 
 def test_sun_windows_match_astral(tmp_path):

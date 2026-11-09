@@ -12,8 +12,10 @@
 #
 # Runs on stock Thingino with nothing extra installed: POSIX sh, busybox awk,
 # curl, jct (Thingino's JSON tool) and prudyntctl (Thingino's streamer control).
-# Sunrise/sunset windows are computed on the camera (NOAA almanac algorithm in
-# awk), so it needs no third-party API and keeps working through a server outage.
+# The server says when to capture (next_windows in the heartbeat reply). The
+# camera can also work the windows out itself (NOAA almanac algorithm in awk),
+# which it does whenever the server hasn't said, so it keeps working through an
+# outage and needs no third-party API.
 #
 # Usage:
 #   sunset-agent run         # main loop (what the init script starts)
@@ -24,7 +26,7 @@
 #
 # Config: /etc/sunset-agent.conf (shell KEY=value; see sunset-agent.conf.example).
 
-AGENT_VERSION="0.2.0"
+AGENT_VERSION="0.3.0"
 CONF="${SUNSET_CONF:-/etc/sunset-agent.conf}"
 STATE_DIR="${SUNSET_STATE_DIR:-/tmp/sunset-agent}"
 
@@ -43,10 +45,15 @@ TILT_DEG=""
 REQUIRE_PLACEMENT=1      # 1: capture only once the server says placement is ready
 INTERVAL_S=20            # seconds between frames inside a window
 HEARTBEAT_S=300          # heartbeat period once placed (30 s while waiting for setup)
-SUNRISE_BEFORE_MIN=30
-SUNRISE_AFTER_MIN=45
-SUNSET_BEFORE_MIN=45
-SUNSET_AFTER_MIN=30
+IDLE_SLEEP_S=30          # how often an idle camera checks whether a window has opened
+# Minutes of capture around each event, for when the agent works the windows
+# out itself (see "capture windows" below). Same as the server's: colour peaks
+# in twilight, so the long side is before a sunrise and after a sunset.
+SUNRISE_BEFORE_MIN=45
+SUNRISE_AFTER_MIN=30
+SUNSET_BEFORE_MIN=30
+SUNSET_AFTER_MIN=45
+SERVER_WINDOWS_MAX_AGE_S=86400   # keep following the server's last window list this long without hearing from it
 SNAPSHOT_CMD="prudyntctl snapshot -c 0"
 PREVIEW_CMD="prudyntctl snapshot -c 1"   # low-res substream for the setup wizard's live view
 PREVIEW_INTERVAL_S=3
@@ -80,6 +87,8 @@ SERVER_LNG=""
 SERVER_PHASE=""
 AIM_SENT=0
 PREVIEW_WANTED=""        # "true" while a setup wizard is watching (from heartbeat)
+SERVER_WINDOWS_AT=""     # when a heartbeat last carried next_windows ("" = the server hasn't said)
+WINDOWS_FILE="$STATE_DIR/windows"   # that list: start_epoch end_epoch phase window_id start_iso end_iso
 SERVER_ROTATION=""       # how the wizard says it's mounted: 0 | 180 | "" (never asked)
 IMAGE_ROTATION=""        # the flip the camera is applying: 0 | 180 | "" (not known yet)
 
@@ -141,6 +150,7 @@ heartbeat() {
 	fi
 	SERVER_STATUS=$(jget "$_out" placement_status)
 	PREVIEW_WANTED=$(jget "$_out" preview_wanted)
+	read_server_windows "$_out"
 	case "$SERVER_STATUS" in
 	ready)
 		SERVER_LAT=$(jget "$_out" placement.lat)
@@ -252,6 +262,70 @@ prudynt_flip() {
 			"$JCT_BIN" /etc/prudynt.json set image.vflip "$1" >/dev/null 2>&1
 	fi || log "picture flip is set but could not be stored; it will be set again after a reboot"
 	return 0
+}
+
+# ---- capture windows -----------------------------------------------------------
+# The server owns the definition of a capture window and sends the next ones in
+# every ready heartbeat reply (device-protocol.md §6.3 next_windows). The agent
+# follows that list, including an empty one (capture nothing: a paused camera).
+# It works windows out itself (windows(), below) only when the server hasn't
+# said: the key is absent, or nothing has been heard for SERVER_WINDOWS_MAX_AGE_S.
+
+# iso_epoch 2026-11-09T00:09:43.000Z -> seconds since 1970. Prints nothing
+# unless it is a UTC ("Z") timestamp.
+iso_epoch() {
+	awk -v s="$1" 'BEGIN {
+		if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\.[0-9]+)?Z$/) exit
+		y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+		# days since 1970-01-01 (Hinnant days_from_civil)
+		if (m <= 2) y--
+		era = int((y >= 0 ? y : y - 399) / 400)
+		yoe = y - era * 400
+		doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+		doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+		printf "%d", (era * 146097 + doe - 719468) * 86400 + substr(s, 12, 2) * 3600 + substr(s, 15, 2) * 60 + substr(s, 18, 2)
+	}'
+}
+
+# read_server_windows HEARTBEAT_JSON: remember the server's list, or forget it
+# when this reply has none (not placed any more, or an older server).
+read_server_windows() {
+	_sw=$("$JCT_BIN" "$1" get next_windows 2>/dev/null)
+	if [ -z "$_sw" ] || [ "$_sw" = "null" ]; then
+		SERVER_WINDOWS_AT=""
+		rm -f "$WINDOWS_FILE"
+		return 0
+	fi
+	: >"$WINDOWS_FILE.tmp"
+	_sw_i=0
+	while [ "$_sw_i" -lt 8 ]; do
+		_sw_id=$(jget "$1" "next_windows.$_sw_i.window_id")
+		[ -n "$_sw_id" ] || break
+		_sw_ph=$(jget "$1" "next_windows.$_sw_i.phase")
+		_sw_s=$(jget "$1" "next_windows.$_sw_i.start_at")
+		_sw_e=$(jget "$1" "next_windows.$_sw_i.end_at")
+		_sw_st=$(iso_epoch "$_sw_s")
+		_sw_en=$(iso_epoch "$_sw_e")
+		_sw_i=$((_sw_i + 1))
+		# The id is sent back as a form field: letters, digits, . _ - only.
+		case "$_sw_id" in *[!A-Za-z0-9._-]*) continue ;; esac
+		case "$_sw_ph" in sunrise | sunset) ;; *) continue ;; esac
+		[ -n "$_sw_st" ] && [ -n "$_sw_en" ] || continue
+		echo "$_sw_st $_sw_en $_sw_ph $_sw_id $_sw_s $_sw_e" >>"$WINDOWS_FILE.tmp"
+	done
+	mv "$WINDOWS_FILE.tmp" "$WINDOWS_FILE"
+	SERVER_WINDOWS_AT=$(date +%s)
+}
+
+# following_server NOW: true while the server's list is the one to obey.
+following_server() {
+	[ -n "$SERVER_WINDOWS_AT" ] && [ $(($1 - SERVER_WINDOWS_AT)) -lt "$SERVER_WINDOWS_MAX_AGE_S" ]
+}
+
+# server_window NOW -> prints "<phase> <window_id>" if the server's list has a window open at NOW.
+server_window() {
+	[ -f "$WINDOWS_FILE" ] || return 0
+	awk -v now="$1" '$1 <= now && now < $2 { print $3, $4; exit }' "$WINDOWS_FILE"
 }
 
 # windows EPOCH LAT LNG PHASE MODE
@@ -441,7 +515,9 @@ run() {
 		fi
 
 		_win=""
-		if clock_ok && current_location; then
+		if clock_ok && following_server "$_now"; then
+			_win=$(server_window "$_now")
+		elif clock_ok && current_location; then
 			if [ "$REQUIRE_PLACEMENT" = 0 ] || [ "$SERVER_STATUS" = "ready" ]; then
 				_win=$(windows "$_now" "$_lat" "$_lng" "$_phase" active)
 			fi
@@ -461,7 +537,7 @@ run() {
 				_last_hb=0   # heartbeat right away: the aim may have been set meanwhile
 				continue
 			fi
-			sleep 30
+			sleep "$IDLE_SLEEP_S"
 		fi
 	done
 }
@@ -478,6 +554,11 @@ windows)
 		exit 1
 	fi
 	echo "location $_lat,$_lng phase=$_phase server_status=${SERVER_STATUS:-unknown}"
+	if [ -n "$SERVER_WINDOWS_AT" ]; then
+		echo "from the server (the agent follows these; none listed = capture nothing):"
+		awk '{ print $3, $4, "start=" $5, "end=" $6 }' "$WINDOWS_FILE"
+		echo "worked out on the camera (used only if the server stops answering):"
+	fi
 	windows "$(date +%s)" "$_lat" "$_lng" "$_phase" list
 	;;
 snap)
