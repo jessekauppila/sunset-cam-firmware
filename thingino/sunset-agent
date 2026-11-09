@@ -8,6 +8,7 @@
 #   heartbeat  POST /api/cameras/<id>/heartbeat      (request_placement: true)
 #   placement  POST /api/cameras/<id>/placement      (typed aim; no gyro on these cams)
 #   snapshot   POST /api/cameras/<id>/snapshot       (multipart JPEG, the hot path)
+#   preview    POST /api/cameras/<id>/preview        (low-res frames while the setup wizard is open)
 #
 # Runs on stock Thingino with nothing extra installed: POSIX sh, busybox awk,
 # curl, jct (Thingino's JSON tool) and prudyntctl (Thingino's streamer control).
@@ -19,10 +20,11 @@
 #   sunset-agent windows     # print today's capture windows and exit
 #   sunset-agent snap        # capture + upload one frame now (bring-up test)
 #   sunset-agent heartbeat   # send one heartbeat, print the server's reply
+#   sunset-agent rotate      # print the picture's rotation; `rotate 0|180` sets it
 #
 # Config: /etc/sunset-agent.conf (shell KEY=value; see sunset-agent.conf.example).
 
-AGENT_VERSION="0.1.0"
+AGENT_VERSION="0.2.0"
 CONF="${SUNSET_CONF:-/etc/sunset-agent.conf}"
 STATE_DIR="${SUNSET_STATE_DIR:-/tmp/sunset-agent}"
 
@@ -49,12 +51,25 @@ SNAPSHOT_CMD="prudyntctl snapshot -c 0"
 PREVIEW_CMD="prudyntctl snapshot -c 1"   # low-res substream for the setup wizard's live view
 PREVIEW_INTERVAL_S=3
 PREVIEW_MAX_S=600        # cap on one preview session
+# Mounted upside down: the setup wizard asks which way up the camera sits and the
+# agent turns the picture to match. FLIP_CMD is run with "true" (turn the picture
+# 180 degrees) or "false" (back to normal); FLIP_STATE_CMD prints 180 or 0 for
+# what the camera is doing now. Set FLIP_CMD="" if this camera can't flip: the
+# wizard then doesn't ask.
+FLIP_CMD="prudynt_flip"
+FLIP_STATE_CMD="prudynt_flip_state"
 CURL_BIN="curl"
 JCT_BIN="jct"
 MAX_BYTES=5242880        # server cap: 5 MB
 
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
+
+# The default flip needs prudynt. Without it (a build on the Raptor streamer,
+# say) don't claim the camera can flip: the wizard would ask for nothing.
+if [ "$FLIP_CMD" = "prudynt_flip" ] && ! command -v prudyntctl >/dev/null 2>&1; then
+	FLIP_CMD=""
+fi
 
 mkdir -p "$STATE_DIR"
 
@@ -65,6 +80,8 @@ SERVER_LNG=""
 SERVER_PHASE=""
 AIM_SENT=0
 PREVIEW_WANTED=""        # "true" while a setup wizard is watching (from heartbeat)
+SERVER_ROTATION=""       # how the wizard says it's mounted: 0 | 180 | "" (never asked)
+IMAGE_ROTATION=""        # the flip the camera is applying: 0 | 180 | "" (not known yet)
 
 log() {
 	logger -t sunset-agent "$*" 2>/dev/null
@@ -88,7 +105,9 @@ hardware_id() {
 }
 
 capabilities_json() {
-	printf '{"device_class":"thingino","camera_model":"%s","has_orientation_sensor":false,"firmware_version":"sunset-agent-%s","streaming_modes":["stills"],"upload_modes":["api"],"has_edge_ml":false,"battery_powered":false,"preview":true}' "$CAMERA_MODEL" "$AGENT_VERSION"
+	_flip=false
+	[ -n "$FLIP_CMD" ] && _flip=true
+	printf '{"device_class":"thingino","camera_model":"%s","has_orientation_sensor":false,"firmware_version":"sunset-agent-%s","streaming_modes":["stills"],"upload_modes":["api"],"has_edge_ml":false,"battery_powered":false,"preview":true,"image_flip":%s}' "$CAMERA_MODEL" "$AGENT_VERSION" "$_flip"
 }
 
 # post_json PATH BODY OUTFILE [auth] -> prints HTTP status ("000" on network failure)
@@ -127,6 +146,7 @@ heartbeat() {
 		SERVER_LAT=$(jget "$_out" placement.lat)
 		SERVER_LNG=$(jget "$_out" placement.lng)
 		SERVER_PHASE=$(jget "$_out" placement.phase_preference)
+		SERVER_ROTATION=$(jget "$_out" placement.bracket.image_rotation_deg)
 		;;
 	awaiting_aim)
 		SERVER_LAT=$(jget "$_out" lat)
@@ -154,6 +174,84 @@ report_aim() {
 		# waiting for the next heartbeat.
 		SERVER_STATUS=$(jget "$STATE_DIR/placement.json" placement_status)
 	fi
+}
+
+# ---- mount orientation -------------------------------------------------------
+# A window mount can hold the camera upside down. The setup wizard asks which
+# way up it sits and the server passes that on in the ready placement as
+# placement.bracket.image_rotation_deg: 0 or 180 (device-protocol.md §6.3).
+
+# current_rotation -> prints 180 if the camera is turning its picture over, else 0.
+current_rotation() {
+	_r=""
+	# shellcheck disable=SC2086
+	[ -n "$FLIP_STATE_CMD" ] && _r=$($FLIP_STATE_CMD 2>/dev/null)
+	[ "$_r" = 180 ] || _r=0
+	printf '%s' "$_r"
+}
+
+# set_rotation DEG. Anything but 0 or 180 (including empty: the wizard never
+# asked) leaves the camera's flip alone. A failed flip is retried on the next
+# heartbeat, because IMAGE_ROTATION only changes once the command succeeds.
+set_rotation() {
+	case "$1" in
+	0) _on=false ;;
+	180) _on=true ;;
+	*) return 0 ;;
+	esac
+	[ -n "$FLIP_CMD" ] || return 0
+	[ "$1" = "$IMAGE_ROTATION" ] && return 0
+	# shellcheck disable=SC2086
+	if $FLIP_CMD "$_on" >/dev/null 2>&1; then
+		IMAGE_ROTATION=$1
+		log "picture rotation set to $1 degrees"
+	else
+		log "could not set picture rotation to $1 degrees ($FLIP_CMD $_on failed); will retry"
+		return 1
+	fi
+}
+# The default FLIP_CMD / FLIP_STATE_CMD, for Thingino's prudynt streamer
+# (checked against prudynt-t's source at Thingino's 2026-11 stable pin; see
+# README "Mounted upside down").
+
+# prudynt_flip_state -> prints 180 when the running streamer mirrors the picture
+# both ways (that is a 180 degree turn), else 0. A null value is a read.
+prudynt_flip_state() {
+	prudyntctl json '{"image":{"hflip":null,"vflip":null}}' >"$STATE_DIR/flip.json" 2>/dev/null || return 1
+	if [ "$(jget "$STATE_DIR/flip.json" image.hflip)" = true ] &&
+		[ "$(jget "$STATE_DIR/flip.json" image.vflip)" = true ]; then
+		echo 180
+	else
+		echo 0
+	fi
+}
+
+# prudynt_flip true|false. Takes effect at once on every stream (it is set in
+# the image processor, no restart), then is stored so it survives a reboot.
+prudynt_flip() {
+	case "$1" in
+	true) _want=180 ;;
+	false) _want=0 ;;
+	*) return 2 ;;
+	esac
+	# The values must be JSON booleans; 1/0 or "true" are silently ignored.
+	printf '{"image":{"hflip":%s,"vflip":%s}}\n' "$1" "$1" | prudyntctl json - >/dev/null 2>&1 || return 1
+	# prudyntctl exits 0 even when the streamer refused, so read the state back.
+	[ "$(prudynt_flip_state)" = "$_want" ] || return 1
+	# Older builds can hand back one frame buffered before the flip: use it up.
+	prudyntctl snapshot -c 0 >/dev/null 2>&1
+	prudyntctl snapshot -c 1 >/dev/null 2>&1
+	# Store it. Builds since 2026-10 keep user settings in a separate layer
+	# written by prudynt-config; before that /etc/prudynt.json was the one file.
+	# Not fatal if this fails: the agent sets the flip again after every boot.
+	if command -v prudynt-config >/dev/null 2>&1; then
+		prudynt-config set image.hflip "$1" >/dev/null 2>&1 &&
+			prudynt-config set image.vflip "$1" >/dev/null 2>&1
+	else
+		"$JCT_BIN" /etc/prudynt.json set image.hflip "$1" >/dev/null 2>&1 &&
+			"$JCT_BIN" /etc/prudynt.json set image.vflip "$1" >/dev/null 2>&1
+	fi || log "picture flip is set but could not be stored; it will be set again after a reboot"
+	return 0
 }
 
 # windows EPOCH LAT LNG PHASE MODE
@@ -279,6 +377,7 @@ preview_upload() {
 		-o "$STATE_DIR/preview.json" -w '%{http_code}' \
 		-H "Authorization: Bearer $DEVICE_TOKEN" \
 		-F "image=@$1;type=image/jpeg" \
+		-F "rotation_deg=${IMAGE_ROTATION:-0}" \
 		"${API_BASE%/}/api/cameras/$CAMERA_ID/preview" 2>/dev/null || true
 }
 
@@ -327,6 +426,7 @@ clock_ok() { [ "$(date -u +%Y)" -ge 2025 ]; }
 run() {
 	check_config
 	log "starting v$AGENT_VERSION camera_id=$CAMERA_ID api=$API_BASE"
+	IMAGE_ROTATION=$(current_rotation)
 	register
 	_last_hb=0
 	_state="idle"
@@ -335,7 +435,8 @@ run() {
 		_period=$HEARTBEAT_S
 		[ "$SERVER_STATUS" != "ready" ] && _period=30
 		if [ $((_now - _last_hb)) -ge "$_period" ]; then
-			heartbeat "$_state"
+			# Only the main loop turns the picture; the bench subcommands just report.
+			heartbeat "$_state" && set_rotation "$SERVER_ROTATION"
 			_last_hb=$_now
 		fi
 
@@ -396,8 +497,19 @@ heartbeat)
 	heartbeat idle && cat "$STATE_DIR/heartbeat.json" && echo
 	echo "placement_status=${SERVER_STATUS:-unknown}"
 	;;
+rotate)
+	# Bench check for a camera mounted upside down: `rotate` prints what the
+	# camera is doing, `rotate 180` turns the picture over, `rotate 0` turns it back.
+	IMAGE_ROTATION=$(current_rotation)
+	case "${2:-}" in
+	"") ;;
+	0 | 180) set_rotation "$2" || exit 1 ;;
+	*) echo "usage: $0 rotate [0|180]" >&2; exit 2 ;;
+	esac
+	echo "rotation=$(current_rotation)"
+	;;
 *)
-	echo "usage: $0 {run|windows|snap [sunrise|sunset]|preview|heartbeat}" >&2
+	echo "usage: $0 {run|windows|snap [sunrise|sunset]|preview|heartbeat|rotate [0|180]}" >&2
 	exit 2
 	;;
 esac

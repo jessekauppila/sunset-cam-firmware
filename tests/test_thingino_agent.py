@@ -37,6 +37,7 @@ class MockApp:
         self.calls: list[tuple[str, object]] = []
         self.aimed = False
         self.previews_wanted = 0  # preview frames still wanted by a (pretend) open wizard
+        self.rotation = None  # placement.bracket.image_rotation_deg; None = the wizard never asked
 
     def handler(self):
         app = self
@@ -53,6 +54,17 @@ class MockApp:
                 self.end_headers()
                 self.wfile.write(data)
 
+            def _multipart(self, raw):
+                msg = BytesParser(policy=HTTP).parsebytes(
+                    f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode() + raw
+                )
+                fields = {}
+                for part in msg.iter_parts():
+                    name = part.get_param("name", header="content-disposition")
+                    payload = part.get_payload(decode=True)
+                    fields[name] = payload if name == "image" else payload.decode()
+                return fields
+
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0))
                 raw = self.rfile.read(n)
@@ -63,7 +75,8 @@ class MockApp:
                 if auth != f"Bearer {TOKEN}":
                     return self._json(401, {"error": "unauthorized"})
                 if self.path == "/api/cameras/7/preview":
-                    app.calls.append(("preview", {"bytes": n, "jpeg": b"\xff\xd8\xff" in raw}))
+                    app.calls.append(("preview", {"bytes": n, "jpeg": b"\xff\xd8\xff" in raw,
+                                                  "rotation_deg": self._multipart(raw).get("rotation_deg")}))
                     app.previews_wanted -= 1
                     return self._json(200, {"preview_wanted": app.previews_wanted > 0})
                 if self.path == "/api/cameras/7/heartbeat":
@@ -75,26 +88,19 @@ class MockApp:
                         if app.previews_wanted > 0:
                             body["preview_wanted"] = True
                         return self._json(200, body)
+                    placement = {"lat": "48.750000", "lng": "-122.480000", "phase_preference": "sunset"}
+                    if app.rotation is not None:
+                        placement["bracket"] = {"lens": "fixed", "image_rotation_deg": app.rotation}
                     return self._json(200, {"acknowledged_at": "x", "placement_status": "ready",
-                                            "placement": {"lat": "48.750000", "lng": "-122.480000",
-                                                          "phase_preference": "sunset"}})
+                                            "placement": placement})
                 if self.path == "/api/cameras/7/placement":
                     body = json.loads(raw)
                     app.calls.append(("placement", body))
                     app.aimed = True
                     return self._json(200, {"placement_status": "ready"})
                 if self.path == "/api/cameras/7/snapshot":
-                    msg = BytesParser(policy=HTTP).parsebytes(
-                        f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode() + raw
-                    )
-                    fields = {}
-                    for part in msg.iter_parts():
-                        name = part.get_param("name", header="content-disposition")
-                        payload = part.get_payload(decode=True)
-                        if name == "image":
-                            fields["image_bytes"] = len(payload)
-                        else:
-                            fields[name] = payload.decode()
+                    fields = self._multipart(raw)
+                    fields["image_bytes"] = len(fields.pop("image"))
                     app.calls.append(("snapshot", fields))
                     return self._json(202, {"snapshot_id": 1, "accepted_at": "x"})
                 return self._json(404, {"error": "nope"})
@@ -128,11 +134,26 @@ def _write_conf(tmp_path: Path, base: str, **extra) -> Path:
         "SUNSET_BEFORE_MIN": "1440",
         "SUNSET_AFTER_MIN": "1440",
         "SNAPSHOT_CMD": f"cat {jpeg}",
+        # No prudynt on the test machine: record flips instead (see _flip_log).
+        "FLIP_CMD": f"sh {_fake_flip(tmp_path)}",
+        "FLIP_STATE_CMD": "echo 0",
     }
     conf.update(extra)
     path = tmp_path / "sunset-agent.conf"
     path.write_text("".join(f'{k}="{v}"\n' for k, v in conf.items()))
     return path
+
+
+def _fake_flip(tmp_path: Path) -> Path:
+    """A stand-in FLIP_CMD: appends its argument (true|false) to flip.log."""
+    script = tmp_path / "fake-flip"
+    script.write_text(f'echo "$1" >> {tmp_path / "flip.log"}\n')
+    return script
+
+
+def _flip_log(tmp_path: Path) -> list[str]:
+    log = tmp_path / "flip.log"
+    return log.read_text().split() if log.exists() else []
 
 
 def _env(tmp_path, conf):
@@ -201,6 +222,182 @@ def test_sends_setup_previews_while_the_wizard_watches(server, tmp_path):
     assert "snapshot" not in kinds  # previews are never captures
     # Heartbeats again right after the session ends (the aim may have arrived).
     assert kinds.index("heartbeat", kinds.index("preview")) > kinds.index("preview")
+
+
+def _run_until(app, proc, done, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline and not done():
+        time.sleep(0.2)
+    proc.terminate()
+    proc.wait(5)
+
+
+def test_turns_the_picture_over_when_mounted_upside_down(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    app.rotation = 180
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    # Several heartbeats all say 180, then the camera is re-aimed the right way up.
+    heartbeats = lambda: [c[0] for c in app.calls].count("heartbeat")  # noqa: E731
+    deadline = time.time() + 15
+    while time.time() < deadline and heartbeats() < 3:
+        time.sleep(0.2)
+    app.rotation = 0
+    seen = heartbeats()
+    _run_until(app, proc, lambda: heartbeats() >= seen + 2)
+
+    assert app.calls[0][1]["capabilities"]["image_flip"] is True
+    # Flipped once (not on every heartbeat), then flipped back.
+    assert _flip_log(tmp_path) == ["true", "false"]
+
+
+def test_leaves_the_flip_alone_when_the_wizard_never_asked(server, tmp_path):
+    app, base = server
+    app.aimed = True  # ready placement, but no bracket.image_rotation_deg
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    _run_until(app, proc, lambda: [c[0] for c in app.calls].count("heartbeat") >= 3)
+    assert [c[0] for c in app.calls].count("heartbeat") >= 3
+    assert _flip_log(tmp_path) == []
+
+
+def test_retries_a_flip_that_failed(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    app.rotation = 180
+    # Fails the first time it runs, works after that.
+    flaky = tmp_path / "flaky-flip"
+    flaky.write_text(
+        f'echo "$1" >> {tmp_path / "flip.log"}\n'
+        f'[ -f {tmp_path / "tried"} ] || {{ touch {tmp_path / "tried"}; exit 1; }}\n'
+    )
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1", FLIP_CMD=f"sh {flaky}")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    _run_until(app, proc, lambda: [c[0] for c in app.calls].count("heartbeat") >= 4)
+    assert _flip_log(tmp_path) == ["true", "true"]  # second try stuck; no third
+
+
+def test_says_it_cannot_flip_when_flip_is_turned_off(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    app.rotation = 180
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1", FLIP_CMD="")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    _run_until(app, proc, lambda: [c[0] for c in app.calls].count("heartbeat") >= 2)
+    assert app.calls[0][1]["capabilities"]["image_flip"] is False
+    assert _flip_log(tmp_path) == []
+
+
+@pytest.mark.parametrize("state_cmd, expected", [("echo 0", "0"), ("echo 180", "180"), ("false", "0")])
+def test_preview_frames_say_what_flip_the_camera_applied(server, tmp_path, state_cmd, expected):
+    app, base = server
+    app.previews_wanted = 2
+    jpeg = tmp_path / "small.jpg"
+    jpeg.write_bytes(b"\xff\xd8\xff\xe0" + b"p" * 500 + b"\xff\xd9")
+    conf = _write_conf(tmp_path, base, AZIMUTH_DEG="", TILT_DEG="", PREVIEW_CMD=f"cat {jpeg}",
+                       PREVIEW_INTERVAL_S="0", FLIP_STATE_CMD=state_cmd)
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    _run_until(app, proc, lambda: [c[0] for c in app.calls].count("preview") >= 2, timeout=10)
+    previews = [c[1] for c in app.calls if c[0] == "preview"]
+    assert len(previews) == 2
+    assert {p["rotation_deg"] for p in previews} == {expected}
+
+
+FAKE_PRUDYNTCTL = r"""#!/bin/sh
+# Stand-in for Thingino's prudyntctl: keeps the flip in $FAKE_DIR/flip and
+# answers like the real one (exit 0 whether or not the request was accepted).
+state="$FAKE_DIR/flip"
+[ -f "$state" ] || echo false >"$state"
+case "$1" in
+json)
+	if [ "$2" = - ]; then body=$(cat); else body=$2; fi
+	if [ ! -f "$FAKE_DIR/refuse" ]; then
+		case "$body" in
+		*'"hflip":true,"vflip":true'*) echo true >"$state" ;;
+		*'"hflip":false,"vflip":false'*) echo false >"$state" ;;
+		esac
+	fi
+	v=$(cat "$state")
+	printf '{"image":{"vflip":%s,"hflip":%s}}\n' "$v" "$v"
+	;;
+snapshot) echo "snapshot $2 $3" >>"$FAKE_DIR/calls" ;;
+esac
+exit 0
+"""
+
+
+def _fake_prudynt(tmp_path: Path, *, layered: bool) -> dict:
+    """PATH with a fake prudyntctl, and either prudynt-config (current builds) or
+    only a jct that accepts `set` (builds before the layered config)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "prudyntctl").write_text(FAKE_PRUDYNTCTL)
+    if layered:
+        (bin_dir / "prudynt-config").write_text('#!/bin/sh\necho "$*" >>"$FAKE_DIR/stored"\n')
+    real_jct = shutil.which("jct")
+    (bin_dir / "jct").write_text(
+        f'#!/bin/sh\n[ "$2" = set ] && {{ echo "$*" >>"$FAKE_DIR/stored"; exit 0; }}\nexec {real_jct} "$@"\n'
+    )
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    return {**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_DIR": str(tmp_path),
+            "SUNSET_CONF": "/nonexistent", "SUNSET_STATE_DIR": str(tmp_path / "state"),
+            "SUNSET_AGENT_LIB": "1"}
+
+
+def _lib(env, script):
+    return subprocess.run(["dash", "-c", f". {AGENT}; {script}"], env=env,
+                          capture_output=True, text=True)
+
+
+def _stored(tmp_path: Path) -> list[str]:
+    f = tmp_path / "stored"
+    return f.read_text().splitlines() if f.exists() else []
+
+
+def test_default_flip_drives_prudynt_and_stores_the_setting(tmp_path):
+    env = _fake_prudynt(tmp_path, layered=True)
+    out = _lib(env, "current_rotation; echo; set_rotation 180; current_rotation; echo; "
+                    "set_rotation 0; current_rotation; echo; capabilities_json")
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert lines[:3] == ["0", "180", "0"]
+    assert json.loads(lines[3])["image_flip"] is True
+    assert _stored(tmp_path) == ["set image.hflip true", "set image.vflip true",
+                                 "set image.hflip false", "set image.vflip false"]
+    # One frame per stream is thrown away after each flip (it may predate the flip).
+    assert (tmp_path / "calls").read_text().splitlines() == ["snapshot -c 0", "snapshot -c 1"] * 2
+
+
+def test_default_flip_stores_through_jct_on_builds_without_prudynt_config(tmp_path):
+    env = _fake_prudynt(tmp_path, layered=False)
+    out = _lib(env, "set_rotation 180; current_rotation")
+    assert out.stdout.strip() == "180", out.stderr
+    assert _stored(tmp_path) == ["/etc/prudynt.json set image.hflip true",
+                                 "/etc/prudynt.json set image.vflip true"]
+
+
+def test_default_flip_notices_when_the_streamer_refuses(tmp_path):
+    env = _fake_prudynt(tmp_path, layered=True)
+    (tmp_path / "refuse").touch()  # prudyntctl still exits 0, as the real one does
+    out = _lib(env, 'set_rotation 180; echo "rc=$? applied=$IMAGE_ROTATION"; current_rotation')
+    assert out.stdout.splitlines() == ["rc=1 applied=", "0"]
+    assert "will retry" in out.stderr
+    assert _stored(tmp_path) == []
+
+
+def test_does_not_claim_flip_without_prudynt(tmp_path):
+    env = _fake_prudynt(tmp_path, layered=True)
+    (tmp_path / "bin" / "prudyntctl").unlink()
+    out = _lib(env, "capabilities_json; set_rotation 180; echo; echo rc=$?")
+    assert json.loads(out.stdout.splitlines()[0])["image_flip"] is False
+    assert out.stdout.splitlines()[-1] == "rc=0"  # nothing to do, not an error
 
 
 def test_sun_windows_match_astral(tmp_path):

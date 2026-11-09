@@ -17,11 +17,12 @@ streamer control, which writes a JPEG snapshot to stdout).
 | Aim | MPU6050 gyro reports azimuth/tilt | typed into config, reported once to `/placement` |
 | Capture window | hardcoded UTC times in config (Tier 0) | computed on the camera daily (NOAA almanac, within ~2 min of `astral`) |
 | Cadence | 1 fps | `INTERVAL_S`, default 20 s |
+| Mounted upside down | not handled | the setup wizard asks; the agent flips the picture (`image_flip`) |
 | Directives (`wipe_wifi`, logs) | executed | ignored for now |
 
 Files:
 
-- `sunset-agent`: the agent (`run`, `windows`, `snap`, `heartbeat`).
+- `sunset-agent`: the agent (`run`, `windows`, `snap`, `preview`, `heartbeat`, `rotate`).
 - `S99sunset-agent`: init script.
 - `sunset-agent.conf.example`: config template.
 - Tests: `tests/test_thingino_agent.py` runs the real script under `dash` against a
@@ -116,6 +117,13 @@ sunset-agent windows     # tonight's window, e.g. sunset start=…T00:00Z event=
 ```
 Check the `windows` event time against a sunset table for your location.
 
+If the mount will hold the camera upside down, check the flip now:
+```sh
+sunset-agent rotate        # rotation=0
+sunset-agent rotate 180    # rotation=180; `sunset-agent snap` now uploads an upright frame
+sunset-agent rotate 0
+```
+
 ### 5. Mount it and run
 Mount it facing the sunset with a clear horizon (no windows, no sidewalks in
 frame): in the printed window mount (path B), or anywhere with `AZIMUTH_DEG`
@@ -142,7 +150,40 @@ followed by an `uploaded …` line every ~20 s.
 | `HTTP 404: camera has no paired webcam row` | The camera was made without the tier0 seed or a deployment. |
 | `server is awaiting aim` | Set `AZIMUTH_DEG` and `TILT_DEG`. |
 | Nothing uploads, no `window open` | Check `date -u`; run `sunset-agent windows`. |
+| `could not set picture rotation` | The streamer refused the flip or `prudyntctl` isn't there. Try `sunset-agent rotate 180` by hand; see "Mounted upside down". |
 | Dark or black frames | Night mode/IR cut kicked in at dusk. Turn off Thingino's automatic day/night switching (or its sunset-based dusk2dawn) for this camera. |
+
+## Mounted upside down
+A window mount can hold the camera upside down (cable reach, clearing the
+frame). The agent declares `"image_flip": true`, so the phone setup wizard asks
+"Which way up is the camera?" and stores the answer in the placement as
+`bracket.image_rotation_deg` (0 or 180). Once the placement is `ready`, the
+agent reads that from the heartbeat and turns the picture to match. If the key
+is absent (the wizard never asked) the agent leaves the flip alone.
+
+- **During setup** the camera hasn't been told yet, so the wizard turns the
+  preview itself. Each preview upload carries `rotation_deg`, the flip the
+  camera has already applied, so a re-aimed camera isn't turned twice.
+- **How it flips**: both mirrors (`image.hflip` and `image.vflip`, which
+  together are a 180° turn) through `prudyntctl json`. It takes effect at once
+  on every stream, with no restart. The agent then reads the state back,
+  because `prudyntctl` exits 0 even when the streamer refuses, and stores the
+  setting with `prudynt-config set` (builds since 2026-10), or with
+  `jct /etc/prudynt.json set` on older builds.
+- **Tier0 camera, no wizard**: `sunset-agent rotate 180` once.
+- **Another streamer**: Thingino `master` pre-releases use Raptor, which has no
+  `prudyntctl`. There the agent reports `image_flip: false` (and `SNAPSHOT_CMD`
+  needs changing too). Set `FLIP_CMD` and `FLIP_STATE_CMD` to commands for
+  that streamer to turn it back on.
+- **Pan/tilt cameras (Wyze Cam Pan v3)**: Thingino's motor daemon reads the
+  flip and mirrors its axis coordinates to match, but only when it reloads
+  (`motors -R`) or the camera reboots. Saved presets and absolute positions
+  then point the mirrored way. The agent doesn't move motors today; when it
+  does, it must re-derive the aim after a flip rather than reuse old steps.
+
+All of this was read from Thingino's and prudynt's source (stable pin of
+2026-11) and tested against a stand-in `prudyntctl`. It has not run on a camera
+yet: `sunset-agent rotate 180` on the bench is the first real check.
 
 ## Finding the status light (`find-status-led`)
 Thingino's profiles for the Wyze v3 and Sonoff S2/B1P list only the IR LEDs and

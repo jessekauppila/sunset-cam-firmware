@@ -48,3 +48,13 @@ SUNRISE_AFTER_MIN=45
 # never stored as captures.
 #PREVIEW_CMD="prudyntctl snapshot -c 1"
 #PREVIEW_INTERVAL_S=3
+
+# Mounted upside down? Nothing to set: the phone setup wizard asks which way up
+# the camera sits, and the agent turns the picture to match. A tier0 camera
+# (no wizard): run `sunset-agent rotate 180` once on the camera.
+# FLIP_CMD is run with "true" (turn the picture 180 degrees) or "false";
+# FLIP_STATE_CMD prints 180 or 0. The defaults drive Thingino's prudynt
+# streamer. Set FLIP_CMD="" if this camera can't flip its picture: the wizard
+# then doesn't ask.
+#FLIP_CMD="prudynt_flip"
+#FLIP_STATE_CMD="prudynt_flip_state"
