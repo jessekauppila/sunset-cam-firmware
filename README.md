@@ -22,6 +22,12 @@ The Pi deploy path used in Session 3 was `rsync` from this Mac, but
 now that this repo is on GitHub the `git clone` example below works
 too.
 
+## Thingino cameras
+
+`thingino/` holds `sunset-agent`, a shell agent that speaks the same protocol
+from consumer cameras running Thingino open firmware (Wyze, Sonoff, Tapo…),
+where none of the Python here can run. Its README has the first-camera test plan.
+
 ## Helper scripts
 
 `scripts/configure.sh` and `scripts/snap-now.sh` exist to avoid the

@@ -1,0 +1,403 @@
+#!/bin/sh
+# sunset-agent — Sunrise/Sunset network agent for Thingino cameras.
+#
+# The thin-client counterpart of the Pi firmware (src/sunset_cam/). It speaks the
+# same wire protocol (the-sunset-webcam-map: docs/device-protocol.md):
+#
+#   register   POST /api/cameras/register            (only if CLAIM_CODE is set)
+#   heartbeat  POST /api/cameras/<id>/heartbeat      (request_placement: true)
+#   placement  POST /api/cameras/<id>/placement      (typed aim; no gyro on these cams)
+#   snapshot   POST /api/cameras/<id>/snapshot       (multipart JPEG, the hot path)
+#
+# Runs on stock Thingino with nothing extra installed: POSIX sh, busybox awk,
+# curl, jct (Thingino's JSON tool) and prudyntctl (Thingino's streamer control).
+# Sunrise/sunset windows are computed on the camera (NOAA almanac algorithm in
+# awk), so it needs no third-party API and keeps working through a server outage.
+#
+# Usage:
+#   sunset-agent run         # main loop (what the init script starts)
+#   sunset-agent windows     # print today's capture windows and exit
+#   sunset-agent snap        # capture + upload one frame now (bring-up test)
+#   sunset-agent heartbeat   # send one heartbeat, print the server's reply
+#
+# Config: /etc/sunset-agent.conf (shell KEY=value; see sunset-agent.conf.example).
+
+AGENT_VERSION="0.1.0"
+CONF="${SUNSET_CONF:-/etc/sunset-agent.conf}"
+STATE_DIR="${SUNSET_STATE_DIR:-/tmp/sunset-agent}"
+
+# ---- defaults (override in $CONF) -------------------------------------------
+API_BASE="https://sunrisesunset.studio"
+CAMERA_ID=""
+DEVICE_TOKEN=""
+CLAIM_CODE=""            # set for claim-code onboarding; leave empty for tier0 cameras
+HARDWARE_ID=""           # default: thingino-<SoC serial>
+CAMERA_MODEL=""          # wyze-v3 | sonoff-cam-s2 | sonoff-cam-b1p: lets the setup app use this camera's FOV
+LAT=""                   # fallback location until the server supplies one
+LNG=""
+PHASE="sunset"           # sunrise | sunset | both (the server's phase_preference wins)
+AZIMUTH_DEG=""           # typed aim, reported once while the server says awaiting_aim
+TILT_DEG=""
+REQUIRE_PLACEMENT=1      # 1: capture only once the server says placement is ready
+INTERVAL_S=20            # seconds between frames inside a window
+HEARTBEAT_S=300          # heartbeat period once placed (30 s while waiting for setup)
+SUNRISE_BEFORE_MIN=30
+SUNRISE_AFTER_MIN=45
+SUNSET_BEFORE_MIN=45
+SUNSET_AFTER_MIN=30
+SNAPSHOT_CMD="prudyntctl snapshot -c 0"
+PREVIEW_CMD="prudyntctl snapshot -c 1"   # low-res substream for the setup wizard's live view
+PREVIEW_INTERVAL_S=3
+PREVIEW_MAX_S=600        # cap on one preview session
+CURL_BIN="curl"
+JCT_BIN="jct"
+MAX_BYTES=5242880        # server cap: 5 MB
+
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+mkdir -p "$STATE_DIR"
+
+# Runtime state, refreshed by heartbeat.
+SERVER_STATUS=""         # awaiting_location | awaiting_aim | ready | "" (unknown)
+SERVER_LAT=""
+SERVER_LNG=""
+SERVER_PHASE=""
+AIM_SENT=0
+PREVIEW_WANTED=""        # "true" while a setup wizard is watching (from heartbeat)
+
+log() {
+	logger -t sunset-agent "$*" 2>/dev/null
+	echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sunset-agent: $*" >&2
+}
+
+# jget FILE KEY -> value, or empty for missing/null.
+jget() {
+	_v=$("$JCT_BIN" "$1" get "$2" 2>/dev/null | tr -d '"')
+	[ "$_v" = "null" ] && _v=""
+	printf '%s' "$_v"
+}
+
+hardware_id() {
+	if [ -z "$HARDWARE_ID" ]; then
+		_s=$(soc -s 2>/dev/null)
+		[ -z "$_s" ] && _s=$(tr -d ':' </sys/class/net/wlan0/address 2>/dev/null)
+		HARDWARE_ID="thingino-${_s:-unknown}"
+	fi
+	printf '%s' "$HARDWARE_ID"
+}
+
+capabilities_json() {
+	printf '{"device_class":"thingino","camera_model":"%s","has_orientation_sensor":false,"firmware_version":"sunset-agent-%s","streaming_modes":["stills"],"upload_modes":["api"],"has_edge_ml":false,"battery_powered":false,"preview":true}' "$CAMERA_MODEL" "$AGENT_VERSION"
+}
+
+# post_json PATH BODY OUTFILE [auth] -> prints HTTP status ("000" on network failure)
+post_json() {
+	if [ "$4" = "auth" ]; then
+		"$CURL_BIN" -sS --connect-timeout 10 --max-time 30 -o "$3" -w '%{http_code}' \
+			-H "Authorization: Bearer $DEVICE_TOKEN" -H 'Content-Type: application/json' \
+			--data "$2" "${API_BASE%/}$1" 2>/dev/null || true
+	else
+		"$CURL_BIN" -sS --connect-timeout 10 --max-time 30 -o "$3" -w '%{http_code}' \
+			-H 'Content-Type: application/json' \
+			--data "$2" "${API_BASE%/}$1" 2>/dev/null || true
+	fi
+}
+
+register() {
+	[ -n "$CLAIM_CODE" ] || return 0
+	_code=$(post_json /api/cameras/register \
+		"{\"claim_code\":\"$CLAIM_CODE\",\"hardware_id\":\"$(hardware_id)\",\"firmware_version\":\"sunset-agent-$AGENT_VERSION\",\"capabilities\":$(capabilities_json)}" \
+		"$STATE_DIR/register.json")
+	log "register -> HTTP $_code"
+}
+
+heartbeat() {
+	_body="{\"request_placement\":true,\"status\":\"$1\",\"uptime_s\":$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0),\"capabilities\":$(capabilities_json)}"
+	_out="$STATE_DIR/heartbeat.json"
+	_code=$(post_json "/api/cameras/$CAMERA_ID/heartbeat" "$_body" "$_out" auth)
+	if [ "$_code" != "200" ]; then
+		log "heartbeat failed: HTTP $_code (keeping last known placement)"
+		return 1
+	fi
+	SERVER_STATUS=$(jget "$_out" placement_status)
+	PREVIEW_WANTED=$(jget "$_out" preview_wanted)
+	case "$SERVER_STATUS" in
+	ready)
+		SERVER_LAT=$(jget "$_out" placement.lat)
+		SERVER_LNG=$(jget "$_out" placement.lng)
+		SERVER_PHASE=$(jget "$_out" placement.phase_preference)
+		;;
+	awaiting_aim)
+		SERVER_LAT=$(jget "$_out" lat)
+		SERVER_LNG=$(jget "$_out" lng)
+		report_aim
+		;;
+	esac
+	return 0
+}
+
+# These cameras have no tilt sensor, so the aim is typed into the config and
+# reported once. Without it the server stays at awaiting_aim.
+report_aim() {
+	[ "$AIM_SENT" = 1 ] && return 0
+	if [ -z "$AZIMUTH_DEG" ] || [ -z "$TILT_DEG" ]; then
+		log "server is awaiting aim; set AZIMUTH_DEG and TILT_DEG in $CONF"
+		return 0
+	fi
+	_code=$(post_json "/api/cameras/$CAMERA_ID/placement" \
+		"{\"azimuth_deg\":$AZIMUTH_DEG,\"tilt_deg\":$TILT_DEG}" "$STATE_DIR/placement.json" auth)
+	log "reported aim az=$AZIMUTH_DEG tilt=$TILT_DEG -> HTTP $_code"
+	if [ "$_code" = "200" ]; then
+		AIM_SENT=1
+		# The reply carries the new status, so capture can start without
+		# waiting for the next heartbeat.
+		SERVER_STATUS=$(jget "$STATE_DIR/placement.json" placement_status)
+	fi
+}
+
+# windows EPOCH LAT LNG PHASE MODE
+#   MODE=active: print "<phase> <window_id>" if EPOCH is inside a window, else nothing.
+#   MODE=list:   print every window that starts within a day of EPOCH.
+windows() {
+	awk -v now="$1" -v lat="$2" -v lng="$3" -v phase="$4" -v mode="$5" -v cam="$CAMERA_ID" \
+		-v srb="$SUNRISE_BEFORE_MIN" -v sra="$SUNRISE_AFTER_MIN" \
+		-v ssb="$SUNSET_BEFORE_MIN" -v ssa="$SUNSET_AFTER_MIN" '
+	function mod(x, m) { x = x - m * int(x / m); return x < 0 ? x + m : x }
+	function acos(x) { return atan2(sqrt(1 - x * x), x) }
+	function asin(x) { return atan2(x, sqrt(1 - x * x)) }
+	# days since 1970-01-01 -> CY CM CD (Hinnant civil_from_days)
+	function civil(z,   era, doe, yoe, doy, mp) {
+		z += 719468
+		era = int((z >= 0 ? z : z - 146096) / 146097)
+		doe = z - era * 146097
+		yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
+		doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100))
+		mp = int((5 * doy + 2) / 153)
+		CD = doy - int((153 * mp + 2) / 5) + 1
+		CM = mp < 10 ? mp + 3 : mp - 9
+		CY = yoe + era * 400 + (CM <= 2 ? 1 : 0)
+	}
+	# (y, m, d) -> days since 1970-01-01 (Hinnant days_from_civil)
+	function dfc(y, m, d,   era, yoe, dy, doe) {
+		if (m <= 2) y--
+		era = int((y >= 0 ? y : y - 399) / 400)
+		yoe = y - era * 400
+		dy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+		doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + dy
+		return era * 146097 + doe - 719468
+	}
+	function doy(z) { civil(z); return z - dfc(CY, 1, 1) + 1 }
+	function iso(e,   s) {
+		civil(int(e / 86400)); s = mod(e, 86400)
+		return sprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", CY, CM, CD, int(s / 3600), int(mod(s, 3600) / 60), mod(s, 60))
+	}
+	# NOAA / Almanac for Computers sunrise-sunset, zenith 90.833 (refraction + disc).
+	# Returns UT hours from 00:00 UTC of the given date (may be <0 or >24), or -999.
+	function event(N, rising,   lh, t, M, L, RA, sd, cd, cH, H, T) {
+		lh = lng / 15
+		t = N + ((rising ? 6 : 18) - lh) / 24
+		M = 0.9856 * t - 3.289
+		L = mod(M + 1.916 * sin(M * D) + 0.020 * sin(2 * M * D) + 282.634, 360)
+		RA = mod(atan2(0.91764 * sin(L * D), cos(L * D)) / D, 360) / 15
+		sd = 0.39782 * sin(L * D); cd = cos(asin(sd))
+		cH = (cos(90.833 * D) - sd * sin(lat * D)) / (cd * cos(lat * D))
+		if (cH > 1 || cH < -1) return -999     # polar night / midnight sun
+		H = acos(cH) / D
+		if (rising) H = 360 - H
+		T = mod(H / 15 + RA - 0.06571 * t - 6.622, 24)
+		return T - lh
+	}
+	function consider(p, z, rising, before, after,   ut, ev, st, en, id) {
+		if (phase != "both" && phase != p) return
+		ut = event(doy(z), rising)
+		if (ut == -999) return
+		ev = z * 86400 + int(ut * 3600)
+		st = ev - before * 60; en = ev + after * 60
+		civil(int(ev / 86400))
+		id = sprintf("%04d-%02d-%02d-%s-cam%s", CY, CM, CD, p, cam)
+		if (mode == "active" && now >= st && now < en) { print p, id; found = 1; exit }
+		if (mode == "list" && en > now - 43200 && st < now + 86400)
+			print p, id, "start=" iso(st), "event=" iso(ev), "end=" iso(en)
+	}
+	BEGIN {
+		D = atan2(0, -1) / 180
+		today = int(now / 86400)
+		for (k = -1; k <= 1; k++) {
+			consider("sunrise", today + k, 1, srb, sra)
+			consider("sunset", today + k, 0, ssb, ssa)
+		}
+	}'
+}
+
+current_location() {
+	_lat="${SERVER_LAT:-$LAT}"
+	_lng="${SERVER_LNG:-$LNG}"
+	_phase="${SERVER_PHASE:-$PHASE}"
+	[ -n "$_lat" ] && [ -n "$_lng" ]
+}
+
+FRAME_SEQ=0
+LAST_WINDOW=""
+
+# capture_upload PHASE WINDOW_ID -> sets UPLOAD_PAUSE_S (extra back-off for the caller)
+capture_upload() {
+	UPLOAD_PAUSE_S=0
+	_img="$STATE_DIR/frame.jpg"
+	_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	# shellcheck disable=SC2086
+	if ! $SNAPSHOT_CMD >"$_img" 2>/dev/null; then
+		log "snapshot command failed: $SNAPSHOT_CMD"
+		return 1
+	fi
+	_size=$(wc -c <"$_img" | tr -d ' ')
+	if [ "$_size" -le 0 ] || [ "$_size" -gt "$MAX_BYTES" ]; then
+		log "bad frame size: $_size bytes"
+		return 1
+	fi
+	[ "$2" != "$LAST_WINDOW" ] && FRAME_SEQ=0 && LAST_WINDOW="$2"
+	FRAME_SEQ=$((FRAME_SEQ + 1))
+	_code=$("$CURL_BIN" -sS --connect-timeout 10 --max-time 60 \
+		-o "$STATE_DIR/snapshot.json" -w '%{http_code}' \
+		-H "Authorization: Bearer $DEVICE_TOKEN" \
+		-F "image=@$_img;type=image/jpeg" \
+		-F "phase=$1" -F "captured_at=$_at" -F "window_id=$2" -F "frame_seq=$FRAME_SEQ" \
+		"${API_BASE%/}/api/cameras/$CAMERA_ID/snapshot" 2>/dev/null || true)
+	case "$_code" in
+	202) log "uploaded $2 #$FRAME_SEQ ($_size bytes)" ;;
+	429) log "rate limited; backing off"; UPLOAD_PAUSE_S=60 ;;
+	401 | 403) log "token rejected (HTTP $_code); camera revoked?"; UPLOAD_PAUSE_S=600 ;;
+	404) log "HTTP 404: camera has no paired webcam row (run the tier0 seed or finish setup)"; UPLOAD_PAUSE_S=300 ;;
+	*) log "upload failed: HTTP $_code $(head -c 200 "$STATE_DIR/snapshot.json" 2>/dev/null)" ;;
+	esac
+	[ "$_code" = "202" ]
+}
+
+# preview_upload FILE -> prints HTTP status; reply in $STATE_DIR/preview.json
+preview_upload() {
+	"$CURL_BIN" -sS --connect-timeout 10 --max-time 20 \
+		-o "$STATE_DIR/preview.json" -w '%{http_code}' \
+		-H "Authorization: Bearer $DEVICE_TOKEN" \
+		-F "image=@$1;type=image/jpeg" \
+		"${API_BASE%/}/api/cameras/$CAMERA_ID/preview" 2>/dev/null || true
+}
+
+# While a setup wizard is open the server asks for preview frames; send one
+# every PREVIEW_INTERVAL_S until it says stop (or anything fails, or the cap).
+preview_session() {
+	_ps_start=$(date +%s)
+	_ps_n=0
+	_ps_img="$STATE_DIR/preview.jpg"
+	log "setup preview: sending frames while the wizard is open"
+	while :; do
+		# shellcheck disable=SC2086
+		if ! $PREVIEW_CMD >"$_ps_img" 2>/dev/null || [ ! -s "$_ps_img" ]; then
+			log "preview command failed: $PREVIEW_CMD"
+			break
+		fi
+		_ps_code=$(preview_upload "$_ps_img")
+		if [ "$_ps_code" != "200" ]; then
+			log "preview upload: HTTP $_ps_code; stopping previews"
+			break
+		fi
+		_ps_n=$((_ps_n + 1))
+		[ "$(jget "$STATE_DIR/preview.json" preview_wanted)" = "true" ] || break
+		if [ $(($(date +%s) - _ps_start)) -ge "$PREVIEW_MAX_S" ]; then
+			log "setup preview: ${PREVIEW_MAX_S}s cap reached"
+			break
+		fi
+		sleep "$PREVIEW_INTERVAL_S"
+	done
+	PREVIEW_WANTED=""
+	log "setup preview: stopped after $_ps_n frames"
+}
+
+check_config() {
+	_missing=""
+	[ -n "$CAMERA_ID" ] || _missing="$_missing CAMERA_ID"
+	[ -n "$DEVICE_TOKEN" ] || _missing="$_missing DEVICE_TOKEN"
+	if [ -n "$_missing" ]; then
+		log "missing in $CONF:$_missing"
+		exit 2
+	fi
+}
+
+clock_ok() { [ "$(date -u +%Y)" -ge 2025 ]; }
+
+run() {
+	check_config
+	log "starting v$AGENT_VERSION camera_id=$CAMERA_ID api=$API_BASE"
+	register
+	_last_hb=0
+	_state="idle"
+	while :; do
+		_now=$(date +%s)
+		_period=$HEARTBEAT_S
+		[ "$SERVER_STATUS" != "ready" ] && _period=30
+		if [ $((_now - _last_hb)) -ge "$_period" ]; then
+			heartbeat "$_state"
+			_last_hb=$_now
+		fi
+
+		_win=""
+		if clock_ok && current_location; then
+			if [ "$REQUIRE_PLACEMENT" = 0 ] || [ "$SERVER_STATUS" = "ready" ]; then
+				_win=$(windows "$_now" "$_lat" "$_lng" "$_phase" active)
+			fi
+		fi
+
+		if [ -n "$_win" ]; then
+			[ "$_state" != "active" ] && log "window open: $_win"
+			_state="active"
+			# shellcheck disable=SC2086
+			capture_upload $_win
+			sleep $((INTERVAL_S + UPLOAD_PAUSE_S))
+		else
+			[ "$_state" = "active" ] && log "window closed"
+			_state="idle"
+			if [ "$PREVIEW_WANTED" = "true" ]; then
+				preview_session
+				_last_hb=0   # heartbeat right away: the aim may have been set meanwhile
+				continue
+			fi
+			sleep 30
+		fi
+	done
+}
+
+# Tests source this file with SUNSET_AGENT_LIB=1 to call functions directly.
+[ "${SUNSET_AGENT_LIB:-0}" = 1 ] && return 0 2>/dev/null
+
+case "${1:-run}" in
+run) run ;;
+windows)
+	heartbeat idle >/dev/null 2>&1 || true
+	if ! current_location; then
+		echo "no location: set LAT/LNG in $CONF or finish setup on the server" >&2
+		exit 1
+	fi
+	echo "location $_lat,$_lng phase=$_phase server_status=${SERVER_STATUS:-unknown}"
+	windows "$(date +%s)" "$_lat" "$_lng" "$_phase" list
+	;;
+snap)
+	check_config
+	capture_upload "${2:-sunset}" "manual-$(date -u +%Y%m%dT%H%M%SZ)"
+	;;
+preview)
+	# Bench check: send one preview frame (it only shows in an open setup wizard).
+	check_config
+	$PREVIEW_CMD >"$STATE_DIR/preview.jpg" || { echo "preview command failed: $PREVIEW_CMD" >&2; exit 1; }
+	_code=$(preview_upload "$STATE_DIR/preview.jpg")
+	echo "preview -> HTTP $_code $(cat "$STATE_DIR/preview.json" 2>/dev/null)"
+	[ "$_code" = "200" ]
+	;;
+heartbeat)
+	check_config
+	heartbeat idle && cat "$STATE_DIR/heartbeat.json" && echo
+	echo "placement_status=${SERVER_STATUS:-unknown}"
+	;;
+*)
+	echo "usage: $0 {run|windows|snap [sunrise|sunset]|preview|heartbeat}" >&2
+	exit 2
+	;;
+esac

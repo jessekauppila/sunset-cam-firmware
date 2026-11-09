@@ -1,0 +1,167 @@
+#!/bin/sh
+# shellcheck disable=SC2046,SC2086  # word splitting of pin lists is intended
+# find-status-led: find which GPIO pin drives a Thingino camera's front status
+# light, so sunset-agent can use it for feedback.
+#
+# Thingino's profiles for the Wyze Cam v3 and Sonoff CAM-S2/B1P don't list a
+# status LED (only the IR LEDs and the IR-cut filter), so we look for it: blink
+# each unused pin in turn, put it back the way it was, and ask whether a light
+# changed.
+#
+# Run it over SSH on the camera, facing the front of the camera:
+#   find-status-led                  # all candidate pins, asks after each one
+#   find-status-led --from 40        # resume from pin 40
+#   find-status-led --pins "38 39"   # only these pins
+#   find-status-led --auto           # no questions: blinks and names each pin
+#
+# Safety: it skips pins Thingino has assigned (/etc/thingino.json "gpio"),
+# pins the kernel has claimed (wifi, SD card, sensor...), and 55/56 (skipped by
+# Thingino's own pin tools too). It never writes to flash memory. Toggling an
+# unknown pin can still make the camera drop Wi-Fi or reboot. If that happens,
+# power-cycle it and resume after the last pin it printed (also saved in
+# /tmp/find-status-led.last until reboot, and in /root/find-status-led.last).
+
+GPIO_MAX=95
+FROM=0
+PINS=""
+AUTO=0
+EXTRA_EXCLUDE=""
+LAST_FILE_TMP=/tmp/find-status-led.last
+LAST_FILE="${FIND_LED_LAST:-/root/find-status-led.last}"
+CONFIG="${THINGINO_CONFIG:-/etc/thingino.json}"
+GPIO_BIN="${GPIO_BIN:-gpio}"
+SYSFS="${GPIO_SYSFS:-/sys/class/gpio}"
+BLINKS=${BLINKS:-3}
+TTY="${FIND_LED_TTY:-/dev/tty}"
+
+usage() {
+	sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+	exit "${1:-0}"
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--from) FROM=$2; shift 2 ;;
+	--pins) PINS=$2; shift 2 ;;
+	--exclude) EXTRA_EXCLUDE="$EXTRA_EXCLUDE $2"; shift 2 ;;
+	--auto) AUTO=1; shift ;;
+	-h | --help) usage 0 ;;
+	*) echo "unknown option: $1" >&2; usage 2 ;;
+	esac
+done
+
+# Pins Thingino already uses: every number inside the "gpio" block of thingino.json.
+config_pins() {
+	[ -f "$CONFIG" ] || return 0
+	awk '
+		/"gpio"[[:space:]]*:/ { inblk = 1; depth = 0 }
+		inblk {
+			line = $0
+			depth += gsub(/\{/, "{", line) - gsub(/\}/, "}", line)
+			s = $0; gsub(/"[^"]*"[[:space:]]*:/, "", s)       # drop key names like "ir850":
+			while (match(s, /[0-9]+/)) { print substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH) }
+			if (depth <= 0 && $0 ~ /\}/) inblk = 0
+		}' "$CONFIG"
+}
+
+# Pins the kernel has claimed for something other than sysfs export.
+claimed_listing() { "$GPIO_BIN" list 2>/dev/null; }
+claimed_pins() { claimed_listing | grep -v '|sysfs' | grep -o 'gpio-[0-9]*' | cut -d- -f2; }
+
+EXCLUDE=$(printf '%s\n' 55 56 $(config_pins) $(claimed_pins) $EXTRA_EXCLUDE | sort -n | uniq | tr '\n' ' ')
+
+echo "== Pins the kernel has already claimed (look for anything named led/status) =="
+claimed_listing | grep 'gpio-' || echo "(none listed)"
+if claimed_listing | grep -i -E 'led|status|indicator' >/dev/null; then
+	echo ">> One of the claimed pins above has an LED-like name. Try it first with --pins."
+fi
+echo
+echo "Skipping: $EXCLUDE"
+
+[ -n "$PINS" ] || PINS=$(seq "$FROM" "$GPIO_MAX")
+
+excluded() { echo " $EXCLUDE " | grep -q " $1 "; }
+
+# Save a pin's state so it can be put back exactly.
+save_state() {
+	WAS_EXPORTED=0
+	[ -d "$SYSFS/gpio$1" ] && WAS_EXPORTED=1
+	INFO=$("$GPIO_BIN" info "$1" 2>/dev/null)
+	OLD_DIR=$(echo "$INFO" | awk '/^DIR:/ { print $2 }')
+	OLD_VAL=$(echo "$INFO" | awk '/^VAL:/ { print $2 }')
+}
+
+restore_state() {
+	if [ "$OLD_DIR" = "out" ]; then
+		"$GPIO_BIN" set "$1" "${OLD_VAL:-0}" >/dev/null 2>&1
+	else
+		"$GPIO_BIN" input "$1" >/dev/null 2>&1
+	fi
+	[ "$WAS_EXPORTED" = 0 ] && "$GPIO_BIN" unexport "$1" >/dev/null 2>&1
+}
+
+blink() {
+	i=0
+	while [ $i -lt $BLINKS ]; do
+		"$GPIO_BIN" set "$1" 1 >/dev/null 2>&1; sleep 0.4
+		"$GPIO_BIN" set "$1" 0 >/dev/null 2>&1; sleep 0.4
+		i=$((i + 1))
+	done
+}
+
+[ "$AUTO" = 1 ] || exec 3<"$TTY"   # answers come from the terminal (one open, read line by line)
+
+found=""
+for pin in $PINS; do
+	excluded "$pin" && continue
+	echo "$pin" >"$LAST_FILE_TMP"
+	echo "$pin" >"$LAST_FILE" 2>/dev/null
+	save_state "$pin"
+	printf 'pin %-3s (was %s %s) blinking... ' "$pin" "${OLD_DIR:-?}" "${OLD_VAL:-?}"
+	blink "$pin"
+	restore_state "$pin"
+	if [ "$AUTO" = 1 ]; then
+		echo "done"
+		sleep 1
+		continue
+	fi
+	printf 'did a light blink? [y/N/r=repeat/q] '
+	read -r answer <&3
+	case "$answer" in
+	y | Y)
+		found="$found $pin"
+		# A light that is ON while the pin is low is active-low.
+		echo "  Holding pin $pin LOW for 3 s: is the light on now? [y/N]"
+		save_state "$pin"
+		"$GPIO_BIN" set "$pin" 0 >/dev/null 2>&1; sleep 3
+		read -r al <&3
+		restore_state "$pin"
+		case "$al" in y | Y) echo "  -> pin $pin, active LOW" ; found_low="$found_low $pin" ;; *) echo "  -> pin $pin, active HIGH" ;; esac
+		;;
+	r | R)
+		save_state "$pin"; blink "$pin"; restore_state "$pin"
+		printf '  did it blink this time? [y/N] '
+		read -r again <&3
+		case "$again" in y | Y) found="$found $pin" ;; esac
+		;;
+	q | Q) break ;;
+	esac
+done
+
+echo
+if [ -n "$found" ]; then
+	echo "Light found on pin(s):$found${found_low:+ (active low:$found_low)}"
+	echo "Next: add it to $CONFIG under \"gpio\", for example"
+	set -- $found
+	if echo " $found_low " | grep -q " $1 "; then
+		echo "  \"led_b\": { \"pin\": $1, \"active_low\": true },"
+	else
+		echo "  \"led_b\": $1,"
+	fi
+	echo "and set STATUS_LED_PIN=$1 in /etc/sunset-agent.conf. Please also report it to"
+	echo "the Thingino project so the camera's profile can include it."
+else
+	echo "No light found on the pins tried. The status LED may not be on a GPIO this"
+	echo "camera exposes; the fallback is our own light on the mount."
+fi
+rm -f "$LAST_FILE_TMP" "$LAST_FILE" 2>/dev/null
