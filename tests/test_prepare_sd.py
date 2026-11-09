@@ -49,6 +49,10 @@ case "$1 $2" in
 "list -plist") cat "$F/list.plist" ;;
 "info -plist") cat "$F/info-$(echo "$3" | tr / _).plist" 2>/dev/null || exit 1 ;;
 "list "*) echo "/dev/$2 (fake):"; echo "   #: TYPE NAME SIZE IDENTIFIER"; echo "   1: Windows_FAT_32 OLDCARD 32 GB ${2}s1" ;;
+"eraseDisk "*)
+  # eraseDisk FS LABEL SCHEME /dev/diskN -> a fake mounted volume
+  d=$(basename "$5"); mkdir -p "$F/vol-$d"
+  printf '<?xml version="1.0"?><plist version="1.0"><dict><key>MountPoint</key><string>%s</string></dict></plist>' "$F/vol-$d" > "$F/info-${d}s1.plist" ;;
 "unmountDisk "*|"eject "*|"mountDisk "*) ;;
 *) echo "fake diskutil: unexpected $*" >&2; exit 2 ;;
 esac
@@ -74,6 +78,17 @@ if [ -n "${FAKE_CORRUPT:-}" ] && echo "$*" | grep -q 'of=/dev/r'; then printf X 
 """
 
 
+# Real cp, but with FAKE_CORRUPT_COPY set it flips a byte of the destination so
+# the script's byte-compare has something to catch.
+FAKE_CP = r"""#!/bin/sh
+/bin/cp "$@" || exit $?
+[ -n "${FAKE_CORRUPT_COPY:-}" ] || exit 0
+for last; do :; done
+[ -f "$last" ] && printf X | dd of="$last" bs=1 seek=1 conv=notrunc 2>/dev/null
+exit 0
+"""
+
+
 @pytest.fixture
 def env(tmp_path):
     fake = tmp_path / "fake"
@@ -86,7 +101,7 @@ def env(tmp_path):
             plistlib.dumps({"DeviceIdentifier": name, "WholeDisk": True, **info}))
     (fake / "info-_.plist").write_bytes(plistlib.dumps(
         {"ParentWholeDisk": "disk3", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]}))
-    for n, body in (("diskutil", FAKE_DISKUTIL), ("sudo", FAKE_SUDO)):
+    for n, body in (("diskutil", FAKE_DISKUTIL), ("sudo", FAKE_SUDO), ("cp", FAKE_CP)):
         (bin_ / n).write_text(body)
         (bin_ / n).chmod(0o755)
     img = tmp_path / "sd.img"
@@ -172,6 +187,71 @@ def test_bad_verification_fails_loudly(env):
     fake, img, e = env
     e["FAKE_CORRUPT"] = "1"
     r = run(env, "--disk", "disk5", str(img), answer="disk5\n")
+    assert r.returncode != 0
+    assert "verification FAILED" in r.stderr
+    assert "eject" not in log(env)
+
+
+# ---- files mode (--fat32 / --copy / --revert) -------------------------------
+
+def test_files_mode_erases_fat32_and_copies_named_files(env, tmp_path):
+    fake, _img, _ = env
+    a = tmp_path / "stock.bin"; a.write_bytes(os.urandom(4096))
+    b = tmp_path / "notes.txt"; b.write_text("hi")
+    r = run(env, "--disk", "disk5", "--copy", f"{a}:recovery_wyzepan3.bin", "--copy", str(b), answer="disk5\n")
+    assert r.returncode == 0, r.stderr
+    calls = log(env)
+    assert "diskutil eraseDisk FAT32 SUNSET MBRFormat /dev/disk5" in calls
+    assert "sudo" not in calls  # no dd in files mode
+    assert calls.index("unmountDisk /dev/disk5") < calls.index("eraseDisk")
+    assert "diskutil eject /dev/disk5" in calls
+    vol = fake / "vol-disk5"
+    assert (vol / "recovery_wyzepan3.bin").read_bytes() == a.read_bytes()
+    assert (vol / "notes.txt").read_text() == "hi"
+    assert "recovery_wyzepan3.bin  <-" in r.stdout  # shown before confirming
+
+
+def test_revert_card_is_only_autoupdate_full_bin(env, tmp_path):
+    fake, _img, _ = env
+    bk = tmp_path / "combined_backup.bin"; bk.write_bytes(os.urandom(2048))
+    r = run(env, "--disk", "disk6", "--revert", str(bk), answer="disk6\n")
+    assert r.returncode == 0, r.stderr
+    assert "eraseDisk FAT32 WYZE_REVERT MBRFormat /dev/disk6" in log(env)
+    vol = fake / "vol-disk6"
+    assert sorted(p.name for p in vol.iterdir()) == ["autoupdate-full.bin"]
+    assert (vol / "autoupdate-full.bin").read_bytes() == bk.read_bytes()
+
+
+def test_files_mode_rejects_installer_arg_and_missing_files(env, tmp_path):
+    r = run(env, "--fat32", "--copy", str(env[1]), str(env[1]), answer="disk5\n")
+    assert r.returncode != 0 and "takes no installer" in r.stderr
+    r = run(env, "--copy", str(tmp_path / "nope.bin"), answer="disk5\n")
+    assert r.returncode != 0 and "no such file" in r.stderr
+    r = run(env, "--fat32", "--disk", "disk5", answer="disk5\n")
+    assert r.returncode != 0 and "at least one --copy" in r.stderr
+    assert "eraseDisk" not in log(env)
+
+
+@pytest.mark.parametrize("disk", ["disk0", "disk4", "disk9"])
+def test_files_mode_refuses_unsafe_disk(env, tmp_path, disk):
+    f = tmp_path / "x.bin"; f.write_bytes(b"x" * 100)
+    r = run(env, "--disk", disk, "--copy", str(f), answer=f"{disk}\n")
+    assert r.returncode != 0 and f"refusing {disk}" in r.stderr
+    assert "eraseDisk" not in log(env)
+
+
+def test_files_mode_wrong_confirmation_writes_nothing(env, tmp_path):
+    f = tmp_path / "x.bin"; f.write_bytes(b"x" * 100)
+    r = run(env, "--disk", "disk5", "--copy", str(f), answer="yes\n")
+    assert r.returncode != 0 and "nothing was written" in r.stderr
+    assert "eraseDisk" not in log(env) and "unmountDisk" not in log(env)
+
+
+def test_files_mode_copy_verification_failure_is_fatal(env, tmp_path):
+    fake, _img, e = env
+    e["FAKE_CORRUPT_COPY"] = "1"
+    f = tmp_path / "x.bin"; f.write_bytes(b"x" * 100)
+    r = run(env, "--disk", "disk5", "--copy", str(f), answer="disk5\n")
     assert r.returncode != 0
     assert "verification FAILED" in r.stderr
     assert "eject" not in log(env)

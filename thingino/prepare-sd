@@ -7,10 +7,24 @@
 #
 # Usage:
 #   thingino/prepare-sd --list
-#   thingino/prepare-sd [options] <model | installer.zip | sd.img>
+#   thingino/prepare-sd [options] <model | installer.zip | sd.img>     image mode
+#   thingino/prepare-sd [options] --fat32 --copy FILE[:NAME] ...        files mode
+#   thingino/prepare-sd [options] --revert combined_backup.bin          Cam v3 revert
 #
 #   model                  e.g. wyze-cam-3, sonoff-outdoor-b1p: downloads
 #                          <model>/<model>-sd.zip from thingino-installers
+#   --fat32                erase the card as one FAT32 partition (MBR) instead
+#                          of imaging it, then copy files to its root. This is
+#                          the shape of every "put a named file on the card"
+#                          path: Wyze's stock recovery, Petcube-style Thingino
+#                          installs, reverting a Cam v3.
+#   --copy FILE[:NAME]     (files mode, repeatable) copy FILE to the card root,
+#                          as NAME if given. Verified by byte comparison.
+#   --revert FILE          the Cam v3 revert card: FILE is this camera's
+#                          WYZE_BACKUP_*/combined_backup.bin from its Thingino
+#                          install; it goes on a fresh FAT32 card as
+#                          autoupdate-full.bin and nothing else.
+#   --label NAME           volume label for --fat32 (default SUNSET)
 #   --disk diskN           the card to write (needed if more than one qualifies)
 #   --stage-agent          after writing, copy sunset-agent, its init script,
 #                          find-status-led and an install script to sunset/ on
@@ -151,18 +165,30 @@ resolve_image() {
 
 # ---- staging -----------------------------------------------------------------
 
+# mount_point_of DISK: mounts the card's first partition and prints its path.
+mount_point_of() {
+	diskutil mountDisk "$1" >/dev/null 2>&1 || true
+	_mp='' _i=0
+	while [ -z "$_mp" ] && [ $_i -lt 20 ]; do
+		_t=$(mktemp)
+		diskutil info -plist "${1}s1" >"$_t" 2>/dev/null || true
+		_mp=$(key "$_t" MountPoint)
+		rm -f "$_t"
+		[ -n "$_mp" ] || { sleep 1; _i=$((_i + 1)); }
+	done
+	[ -n "$_mp" ] || die "the card's FAT32 partition (${1}s1) did not mount"
+	printf '%s' "$_mp"
+}
+
+# copy_verified SRC DEST: copy and byte-compare.
+copy_verified() {
+	cp -X "$1" "$2" || die "copy failed: $1"
+	cmp -s "$1" "$2" || die "verification FAILED: $2 doesn't match $1"
+}
+
 stage_agent() {
 	disk=$1 conf=$2
-	diskutil mountDisk "$disk" >/dev/null 2>&1 || true
-	mp='' i=0
-	while [ -z "$mp" ] && [ $i -lt 20 ]; do
-		t=$(mktemp)
-		diskutil info -plist "${disk}s1" >"$t" 2>/dev/null || true
-		mp=$(key "$t" MountPoint)
-		rm -f "$t"
-		[ -n "$mp" ] || { sleep 1; i=$((i + 1)); }
-	done
-	[ -n "$mp" ] || die "the card's FAT32 partition (${disk}s1) did not mount; files not staged"
+	mp=$(mount_point_of "$disk")
 	mkdir -p "$mp/sunset"
 	for f in sunset-agent S99sunset-agent find-status-led; do
 		cp -X "$HERE/$f" "$mp/sunset/$f"
@@ -194,7 +220,16 @@ EOS
 
 [ "$(uname -s)" = Darwin ] || die "macOS only for now (uses diskutil)"
 
-DISK='' STAGE=0 CONF='' REFRESH=0 LIST=0 SRC=''
+DISK='' STAGE=0 CONF='' REFRESH=0 LIST=0 SRC='' MODE=image LABEL=SUNSET
+COPIES=''   # newline-separated "SRC<TAB>NAME"
+add_copy() {
+	_src=${1%%:*}; _name=${1#*:}
+	[ "$_name" != "$1" ] || _name=$(basename "$_src")
+	[ -f "$_src" ] || die "no such file: $_src"
+	case $_name in */* | '' | . | ..) die "bad destination name: $_name" ;; esac
+	COPIES="$COPIES$_src	$_name
+"
+}
 while [ $# -gt 0 ]; do
 	case $1 in
 	-h | --help) usage ;;
@@ -203,17 +238,28 @@ while [ $# -gt 0 ]; do
 	--disk) [ $# -ge 2 ] || die "--disk needs a value"; DISK=${2#/dev/}; DISK=${DISK#r}; shift ;;
 	--stage-agent) STAGE=1 ;;
 	--conf) [ $# -ge 2 ] || die "--conf needs a file"; CONF=$2; STAGE=1; shift ;;
+	--fat32) MODE=fat32 ;;
+	--label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift ;;
+	--copy) [ $# -ge 2 ] || die "--copy needs FILE[:NAME]"; MODE=fat32; add_copy "$2"; shift ;;
+	--revert)
+		[ $# -ge 2 ] || die "--revert needs the camera's combined_backup.bin"
+		MODE=fat32; LABEL=WYZE_REVERT; add_copy "$2:autoupdate-full.bin"; shift
+		;;
 	-*) die "unknown option $1 (see --help)" ;;
 	*) [ -z "$SRC" ] || die "only one installer, please"; SRC=$1 ;;
 	esac
 	shift
 done
 [ -z "$CONF" ] || [ -f "$CONF" ] || die "no such config: $CONF"
+if [ "$MODE" = fat32 ]; then
+	[ -z "$SRC" ] || die "files mode (--fat32/--copy/--revert) takes no installer argument"
+	[ -n "$COPIES" ] || [ "$STAGE" = 1 ] || die "files mode needs at least one --copy (or --stage-agent)"
+fi
 
 say "Disks:"
 list_disks
 [ "$LIST" = 0 ] || exit 0
-[ -n "$SRC" ] || usage 2
+[ -n "$SRC" ] || [ "$MODE" = fat32 ] || usage 2
 
 if [ -n "$DISK" ]; then
 	case " $CANDIDATES " in
@@ -226,6 +272,36 @@ else
 	[ $# -gt 0 ] || die "no SD card found. Insert one (or use a USB reader) and rerun; --list shows why each disk was refused."
 	[ $# -eq 1 ] || die "several cards qualify ($CANDIDATES); pick one with --disk"
 	DISK=$1
+fi
+
+if [ "$MODE" = fat32 ]; then
+	check "$DISK"
+	[ -z "$REASON" ] || die "refusing $DISK: $REASON"
+	say ""
+	say "About to ERASE this disk as a single FAT32 partition \"$LABEL\" and copy:"
+	say "  $DESC"
+	volumes_on "$DISK"
+	printf '%s' "$COPIES" | while IFS='	' read -r _s _n; do
+		[ -n "$_s" ] && say "    $_n  <-  $_s ($(stat -f %z "$_s") bytes)"
+	done
+	[ "$STAGE" = 0 ] || say "    sunset/  (agent files)"
+	printf 'Type %s to continue, anything else to stop: ' "$DISK"
+	read -r answer || answer=''
+	[ "$answer" = "$DISK" ] || die "stopped; nothing was written"
+
+	diskutil unmountDisk "/dev/$DISK" >/dev/null || die "could not unmount $DISK (close anything using it)"
+	say "Erasing as FAT32..."
+	diskutil eraseDisk FAT32 "$LABEL" MBRFormat "/dev/$DISK" >/dev/null || die "eraseDisk failed on $DISK"
+	mp=$(mount_point_of "$DISK")
+	printf '%s' "$COPIES" | while IFS='	' read -r _s _n; do
+		[ -n "$_s" ] || continue
+		copy_verified "$_s" "$mp/$_n"
+		say "  copied $_n (verified)"
+	done
+	[ "$STAGE" = 0 ] || stage_agent "$DISK" "$CONF"
+	sync
+	diskutil eject "/dev/$DISK" >/dev/null && say "Ejected $DISK. It's ready."
+	exit 0
 fi
 
 say ""
