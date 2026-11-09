@@ -46,6 +46,17 @@ image it chose after first boot (`/etc/os-release`).
    (macOS; `--list` first to see which disks it will accept; `--stage-agent`
    also puts the agent on the card). Then flash and finish setup (Wi-Fi, root
    password). Enable SSH in the web UI if it isn't on.
+   - **Save the backup.** The installer writes this camera's stock firmware to
+     `WYZE_BACKUP_*/combined_backup.bin` on the card. Copy it off; it is the
+     only way back to Wyze for this unit. Make the revert card with
+     `thingino/prepare-sd --revert combined_backup.bin`.
+   - The bundled Thingino images are old (installers issue #73): expect to
+     `sysupgrade -f` and set up Wi-Fi a second time.
+   - Known failure (installers issue #72, one early-revision unit): a
+     red/blue/purple LED cycle for about a minute, then solid red, repeating.
+     If you see that, stop and read the issue before trying more cards.
+   - `prepare-sd --fat32 --copy FILE[:NAME]` erases a card as FAT32 and copies
+     named files to its root, for any "put a file on the card" path.
 2. SSH in (`ssh root@<camera-ip>`) and check:
    ```sh
    date -u                                  # correct UTC time? (ntpd)
