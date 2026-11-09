@@ -42,3 +42,9 @@ SUNSET_BEFORE_MIN=45
 SUNSET_AFTER_MIN=30
 SUNRISE_BEFORE_MIN=30
 SUNRISE_AFTER_MIN=45
+
+# Live view for the phone setup wizard: while it's open, send a low-res frame
+# every PREVIEW_INTERVAL_S (channel 1 is Thingino's substream). Previews are
+# never stored as captures.
+#PREVIEW_CMD="prudyntctl snapshot -c 1"
+#PREVIEW_INTERVAL_S=3

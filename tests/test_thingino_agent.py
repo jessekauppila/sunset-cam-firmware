@@ -36,6 +36,7 @@ class MockApp:
     def __init__(self):
         self.calls: list[tuple[str, object]] = []
         self.aimed = False
+        self.previews_wanted = 0  # preview frames still wanted by a (pretend) open wizard
 
     def handler(self):
         app = self
@@ -61,12 +62,19 @@ class MockApp:
                     return self._json(200, {"camera_id": 7, "placement_status": "awaiting_aim"})
                 if auth != f"Bearer {TOKEN}":
                     return self._json(401, {"error": "unauthorized"})
+                if self.path == "/api/cameras/7/preview":
+                    app.calls.append(("preview", {"bytes": n, "jpeg": b"\xff\xd8\xff" in raw}))
+                    app.previews_wanted -= 1
+                    return self._json(200, {"preview_wanted": app.previews_wanted > 0})
                 if self.path == "/api/cameras/7/heartbeat":
                     app.calls.append(("heartbeat", json.loads(raw)))
                     if not app.aimed:
                         # Neon serializes NUMERIC as strings; mimic that.
-                        return self._json(200, {"acknowledged_at": "x", "placement_status": "awaiting_aim",
-                                                "lat": "48.750000", "lng": "-122.480000"})
+                        body = {"acknowledged_at": "x", "placement_status": "awaiting_aim",
+                                "lat": "48.750000", "lng": "-122.480000"}
+                        if app.previews_wanted > 0:
+                            body["preview_wanted"] = True
+                        return self._json(200, body)
                     return self._json(200, {"acknowledged_at": "x", "placement_status": "ready",
                                             "placement": {"lat": "48.750000", "lng": "-122.480000",
                                                           "phase_preference": "sunset"}})
@@ -168,6 +176,31 @@ def test_waits_for_aim_when_none_configured(server, tmp_path):
     kinds = [c[0] for c in app.calls]
     assert "heartbeat" in kinds
     assert "snapshot" not in kinds
+
+
+def test_sends_setup_previews_while_the_wizard_watches(server, tmp_path):
+    app, base = server
+    app.previews_wanted = 3
+    jpeg = tmp_path / "small.jpg"
+    jpeg.write_bytes(b"\xff\xd8\xff\xe0" + b"p" * 500 + b"\xff\xd9")
+    conf = _write_conf(tmp_path, base, AZIMUTH_DEG="", TILT_DEG="",
+                       PREVIEW_CMD=f"cat {jpeg}", PREVIEW_INTERVAL_S="0")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    deadline = time.time() + 10
+    while time.time() < deadline and [c[0] for c in app.calls].count("heartbeat") < 2:
+        time.sleep(0.2)
+    proc.terminate()
+    proc.wait(5)
+
+    kinds = [c[0] for c in app.calls]
+    assert app.calls[0][1]["capabilities"]["preview"] is True
+    previews = [c[1] for c in app.calls if c[0] == "preview"]
+    assert len(previews) == 3  # stops as soon as the server says nobody is watching
+    assert all(p["jpeg"] for p in previews)
+    assert "snapshot" not in kinds  # previews are never captures
+    # Heartbeats again right after the session ends (the aim may have arrived).
+    assert kinds.index("heartbeat", kinds.index("preview")) > kinds.index("preview")
 
 
 def test_sun_windows_match_astral(tmp_path):
