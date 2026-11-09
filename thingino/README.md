@@ -41,6 +41,12 @@ now, but a failed flash needs a flash programmer to recover, so test it
 second.) The Wyze v3 installer picks the board variant itself; note which
 image it chose after first boot (`/etc/os-release`).
 
+> **Not the Wyze Cam _Pan_ v3.** Despite the name it's a different path: there is
+> no SD installer for it, and its stock SD recovery is reported broken on this
+> model, so no restore path can be proven before writing. Do not flash it yet —
+> see `docs/thingino-pan-v3-flash-handoff.md` for the verdict and what has to
+> land first.
+
 ### 1. Flash and check the basics
 1. Write the installer to an SD card with `thingino/prepare-sd wyze-cam-3`
    (macOS; `--list` first to see which disks it will accept; `--stage-agent`

@@ -4,6 +4,77 @@ Written 2026-11-08 from a Fable session that did the bench onboarding and the
 app/firmware preview work. This task is the firmware-flashing part, split out
 because it wants a focused session and careful reading of Thingino's own source.
 
+## Findings & verdict (resolved 2026-11-08, Opus session)
+
+**The Pan v3 is NOT SD-flashable today, and — the deciding point — no restore
+path can be _proven_ on the hardware before the first write. Per the guardrail
+"always establish the backup/restore path before writing," do not flash the Pan
+v3 now.** Run Phase 1 on the plain Cam v3 (reversible, no case opening); leave
+the Pan v3 parked until the path matures (or return it within the window).
+
+Why — distinguishing confirmed from inferred:
+
+1. **No SD installer exists.** `wltechblog/thingino-installers` has `wyze-cam-pan-v1`,
+   `wyze-cam-pan-v2` and `wyze-cam-3` but **no `wyze-cam-pan-v3`**; no open issue
+   there mentions it; no `docs/cameras/` page for it. _(confirmed 2026-11-08)_
+2. **Stock SD recovery is reported broken on this exact model.** Wyze-forum
+   owners (2023–24) ran `recovery_wyzepan3.bin` on FAT32 and got no flash / a
+   hung purple LED, while the same cards recovered a Cam v2 and Cam v3 fine; one
+   lone success needed one specific SanDisk 32 GB card. So the `autoupdate-full.bin`
+   path the Cam v3 revert leans on is exactly what fails here. A separate report
+   has the slot ignoring some SD cards outright. _(owner-reported, multiple
+   independent threads — matches the premise for this task)_
+3. **No Petcube-style SD auto-exec install hook.** The Petcube installs over SD
+   because stock firmware auto-runs `/mnt/mmc01/cubeclient` every boot; no
+   evidence the Pan v3 has any equivalent. And open issue **#1911** (2026-11-02):
+   the Pan v3 Thingino profile lacked the SD-slot power GPIOs (47, 54, active
+   low), so the slot does not even power on under Thingino until that lands.
+   _(no positive evidence of an SD install path)_
+4. **The USB-boot net is unproven on this model.** Ingenic USB boot (`a108:c309`;
+   thingino-dfu / webflash.thingino.com) is the generic recovery, and the
+   no-disassembly OTG variant is confirmed for the Pan v2 — but explicitly does
+   **not** work on the Cam v3 (same SoC family), and the Pan v3 is listed for
+   neither. The Pan v3 USB port may be power-only (data wires soldered to the
+   Wi-Fi module's D+/D- pads); entry generally needs the case open and flash
+   pins 5&6 shorted. _(by analogy only — no Pan v3 confirmation)_
+5. **CH341A in-circuit is not a safe assumption either.** A teardown of another
+   T31 camera found in-circuit CH341A reads failed because the programmer
+   back-powers the SoC, forcing a flash-chip desolder. So "just clip the SPI
+   chip for a backup" may require isolating/desoldering the chip.
+   _(cross-model evidence, not Wyze-specific)_
+6. **Even a current image booting is inferred.** The T31X secureboop boot fix
+   (PR **#1901**, merged 2026-11-07 22:42 UTC) was validated on a Wyze **VDB2,
+   not a Pan v3**; the 10-04 campan3 release showed the same corrupted clock
+   table it fixes. One person (Discord `livingflore`, per #1911) does run
+   Thingino on a Pan v3, but how they flashed it is unstated.
+
+What that leaves for "restore path before any write":
+- **Provable beforehand:** entering USB boot (short flash pins 5&6, see
+  `a108:c309`), and a full 16 MB dump via thingino-dfu / Web Flasher, verified by
+  reading twice and comparing hashes.
+- **NOT provable beforehand:** that stock SD recovery works (it doesn't here),
+  that an in-circuit CH341A dump works, that a USB-boot _restore_ works on a Pan
+  v3 (nobody has shown it), or that a restored signed stock image re-boots under
+  eFuse-locked secure boot.
+- Honest conclusion: **there is no restore path we can prove on this unit before
+  the first write.** Flashing it today is a write-without-net gamble.
+
+If Jesse chooses to try anyway (treat as sacrificial, within the return window),
+the least-bad order is: open case → confirm USB-boot entry → full flash dump,
+verified → flash a build that includes #1901 → keep the dump as the (unproven)
+restore. **Do not rely on stock SD recovery as the net.** Decide with Jesse
+before buying a programmer or opening the case.
+
+**Revisit when** a `wyze-cam-pan-v3` folder lands in wltechblog/thingino-installers,
+or #1911 lands _and_ someone confirms a post-#1901 image boots + restores on a
+Pan v3.
+
+Sources: themactep/thingino-firmware PR #1901, issues #1900 / #1911, the
+`USB-Boot-Mode` wiki, `docs/cameras/petcube-c401a.md`; Wyze forum threads 261065
+/ 291350 / 332370 / 268875; camdsmith XM68 teardown.
+
+The original task brief follows, kept for context.
+
 ## The ask
 
 Jesse owns a **Wyze Cam Pan v3** (bought from Amazon, within the return window)
