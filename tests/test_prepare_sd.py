@@ -255,3 +255,82 @@ def test_files_mode_copy_verification_failure_is_fatal(env, tmp_path):
     assert r.returncode != 0
     assert "verification FAILED" in r.stderr
     assert "eject" not in log(env)
+
+
+# ---- setup card (--stage-agent / --conf / --wifi-ssid) ----------------------
+
+THINGINO = SCRIPT.parent
+
+
+def _mounted_volume(fake: Path, disk: str) -> Path:
+    """Pretend the card's first partition mounts (image mode never erases, so the
+    fake diskutil has no volume for it yet)."""
+    vol = fake / f"vol-{disk}"
+    vol.mkdir()
+    (fake / f"info-{disk}s1.plist").write_bytes(plistlib.dumps({"MountPoint": str(vol)}))
+    return vol
+
+
+def test_files_mode_makes_a_self_installing_setup_card(env, tmp_path):
+    fake, _img, e = env
+    conf = tmp_path / "sunset-agent.conf"; conf.write_text('CAMERA_ID="7"\n')
+    e["PREPARE_SD_WIFI_PASS"] = "p=ss word"
+    r = run(env, "--disk", "disk5", "--fat32", "--conf", str(conf), "--wifi-ssid", "Home Net", answer="disk5\n")
+    assert r.returncode == 0, r.stderr
+    vol = fake / "vol-disk5"
+    assert "sunset/install.sh" in (vol / "runonce.sh").read_text()  # what Thingino runs on mount
+    assert (vol / "sunset/install.sh").read_bytes() == (THINGINO / "card-install.sh").read_bytes()
+    assert (vol / "sunset/sunset-agent").read_bytes() == (THINGINO / "sunset-agent").read_bytes()
+    assert (vol / "sunset/sunset-agent.conf").read_text() == 'CAMERA_ID="7"\n'
+    assert (vol / "uenv.txt").read_text() == "wlan_ssid=Home Net\nwlan_pass=p=ss word\n"
+    assert "Home Net" in r.stdout and "p=ss word" not in r.stdout + r.stderr  # shown before confirming; never the password
+
+
+def test_image_mode_setup_card_keeps_the_installers_own_uenv(env, tmp_path):
+    fake, img, e = env
+    vol = _mounted_volume(fake, "disk5")
+    (vol / "uenv.txt").write_text("bootdelay=1\nwlan_ssid=Old\nwlan_pass=old\n")
+    (vol / "runonce.done").write_text("")  # a reused card: the camera must run it again
+    conf = tmp_path / "c.conf"; conf.write_text("x\n")
+    e["PREPARE_SD_WIFI_PASS"] = "pw"
+    r = run(env, "--disk", "disk5", "--conf", str(conf), "--wifi-ssid", "Home", str(img), answer="disk5\n")
+    assert r.returncode == 0, r.stderr
+    assert (fake / "card").read_bytes() == img.read_bytes()
+    assert (vol / "uenv.txt").read_text() == "bootdelay=1\nwlan_ssid=Home\nwlan_pass=pw\n"
+    assert not (vol / "runonce.done").exists()
+    assert (vol / "runonce.sh").exists() and (vol / "sunset/sunset-agent.conf").exists()
+
+
+def test_wifi_password_is_asked_for_and_needed(env, tmp_path):
+    fake, _img, _ = env
+    conf = tmp_path / "c.conf"; conf.write_text("x\n")
+    # Asked on stdin before the disk confirmation.
+    r = run(env, "--disk", "disk5", "--fat32", "--conf", str(conf), "--wifi-ssid", "Home", answer="typed-pw\ndisk5\n")
+    assert r.returncode == 0, r.stderr
+    assert (fake / "vol-disk5" / "uenv.txt").read_text() == "wlan_ssid=Home\nwlan_pass=typed-pw\n"
+
+
+def test_no_wifi_password_writes_nothing(env, tmp_path):
+    conf = tmp_path / "c.conf"; conf.write_text("x\n")
+    r = run(env, "--disk", "disk5", "--fat32", "--conf", str(conf), "--wifi-ssid", "Home", answer="")
+    assert r.returncode != 0
+    assert "no Wi-Fi password" in r.stderr
+    assert "eraseDisk" not in log(env)
+
+
+def test_staged_card_installs_itself_the_way_thingino_would_run_it(env, tmp_path):
+    """What prepare-sd stages and what the camera runs, end to end: Thingino's
+    automount calls `sh <card>/runonce.sh`."""
+    fake, _img, _ = env
+    conf = tmp_path / "sunset-agent.conf"; conf.write_text('CAMERA_ID="7"\n')
+    assert run(env, "--disk", "disk5", "--fat32", "--conf", str(conf), answer="disk5\n").returncode == 0
+    vol = fake / "vol-disk5"
+    root = tmp_path / "camera"
+    root.mkdir()
+    r = subprocess.run(["sh", str(vol / "runonce.sh")], capture_output=True, text=True,
+                       env={"SUNSET_ROOT": str(root), "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 1, r.stdout + r.stderr  # installed; finishes after a reboot
+    assert (root / "etc/sunset-agent.conf").read_text() == 'CAMERA_ID="7"\n'
+    assert (root / "usr/sbin/sunset-agent").read_bytes() == (THINGINO / "sunset-agent").read_bytes()
+    assert (root / "etc/init.d/S99sunset-agent").exists()
+    assert (vol / "sunset/sunset-agent.conf").exists()

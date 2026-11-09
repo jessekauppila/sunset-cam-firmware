@@ -26,11 +26,19 @@
 #                          autoupdate-full.bin and nothing else.
 #   --label NAME           volume label for --fat32 (default SUNSET)
 #   --disk diskN           the card to write (needed if more than one qualifies)
-#   --stage-agent          after writing, copy sunset-agent, its init script,
-#                          find-status-led and an install script to sunset/ on
-#                          the card
-#   --conf FILE            also stage FILE (a filled-in sunset-agent.conf);
-#                          implies --stage-agent
+#   --stage-agent          after writing, make it a setup card: copy
+#                          sunset-agent, its init script, find-status-led and
+#                          an install script to sunset/, and put a runonce.sh
+#                          at the card's root. Thingino runs runonce.sh when
+#                          the card mounts, so the camera installs the agent
+#                          by itself (no SSH). See thingino/card-install.sh.
+#   --conf FILE            also stage FILE (a filled-in sunset-agent.conf, e.g.
+#                          from thingino/new-camera); implies --stage-agent
+#   --wifi-ssid NAME       also put this Wi-Fi network on the card (uenv.txt),
+#                          so the camera joins it with no setup-network step.
+#                          The password is asked for, or read from
+#                          PREPARE_SD_WIFI_PASS. Only for a camera you know the
+#                          network of. Removed from the card once it has worked.
 #   --refresh              re-download the installer even if cached
 #   --list                 show every disk and why it is or isn't writable; writes nothing
 #
@@ -195,25 +203,30 @@ stage_agent() {
 	done
 	cp -X "$HERE/sunset-agent.conf.example" "$mp/sunset/sunset-agent.conf.example"
 	[ -z "$conf" ] || cp -X "$conf" "$mp/sunset/sunset-agent.conf"
-	cat >"$mp/sunset/install.sh" <<'EOS'
+	cp -X "$HERE/card-install.sh" "$mp/sunset/install.sh"
+	# Thingino runs this when the card mounts, until it exits 0.
+	cat >"$mp/runonce.sh" <<'EOS'
 #!/bin/sh
-# Run on the camera after Thingino's first boot: sh /mnt/mmcblk0p1/sunset/install.sh
-set -e
-D=$(cd "$(dirname "$0")" && pwd)
-cp "$D/sunset-agent" /usr/sbin/sunset-agent && chmod 755 /usr/sbin/sunset-agent
-cp "$D/find-status-led" /usr/sbin/find-status-led && chmod 755 /usr/sbin/find-status-led
-cp "$D/S99sunset-agent" /etc/init.d/S99sunset-agent && chmod 755 /etc/init.d/S99sunset-agent
-if [ -f "$D/sunset-agent.conf" ]; then
-	cp "$D/sunset-agent.conf" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
-	rm -f "$D/sunset-agent.conf"   # it holds the device token
-	echo "installed /etc/sunset-agent.conf (removed from the card)"
-elif [ ! -f /etc/sunset-agent.conf ]; then
-	cp "$D/sunset-agent.conf.example" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
-	echo "edit /etc/sunset-agent.conf before starting the agent"
-fi
-echo "installed sunset-agent, find-status-led, S99sunset-agent"
+# Sunrise/Sunset setup card: install the agent from this card onto the camera.
+exec sh "$(dirname "$0")/sunset/install.sh" --auto
 EOS
-	say "Staged sunset/ on the card (${conf:+with your config, }run 'sh /mnt/mmcblk0p1/sunset/install.sh' on the camera)."
+	rm -f "$mp/runonce.done"
+	if [ -n "$WIFI_SSID" ]; then
+		# Keep whatever else the card's uenv.txt holds; replace only our two keys.
+		_u="$mp/uenv.txt"
+		if [ -f "$_u" ]; then
+			grep -v -e '^wlan_ssid=' -e '^wlan_pass=' "$_u" >"$_u.tmp" || true
+			mv "$_u.tmp" "$_u"
+		fi
+		printf 'wlan_ssid=%s\nwlan_pass=%s\n' "$WIFI_SSID" "$WIFI_PASS" >>"$_u"
+		say "Put Wi-Fi \"$WIFI_SSID\" on the card (uenv.txt)."
+	fi
+	if [ -n "$conf" ]; then
+		say "Staged a setup card: the camera installs the agent and this config by itself."
+	else
+		say "Staged the agent, without a config: the camera installs it, then edit /etc/sunset-agent.conf there."
+	fi
+	say "  If nothing happens on the camera (old Thingino): sh /mnt/mmcblk0p1/sunset/install.sh"
 }
 
 # ---- main --------------------------------------------------------------------
@@ -221,6 +234,7 @@ EOS
 [ "$(uname -s)" = Darwin ] || die "macOS only for now (uses diskutil)"
 
 DISK='' STAGE=0 CONF='' REFRESH=0 LIST=0 SRC='' MODE=image LABEL=SUNSET
+WIFI_SSID='' WIFI_PASS=${PREPARE_SD_WIFI_PASS:-}
 COPIES=''   # newline-separated "SRC<TAB>NAME"
 add_copy() {
 	_src=${1%%:*}; _name=${1#*:}
@@ -238,6 +252,7 @@ while [ $# -gt 0 ]; do
 	--disk) [ $# -ge 2 ] || die "--disk needs a value"; DISK=${2#/dev/}; DISK=${DISK#r}; shift ;;
 	--stage-agent) STAGE=1 ;;
 	--conf) [ $# -ge 2 ] || die "--conf needs a file"; CONF=$2; STAGE=1; shift ;;
+	--wifi-ssid) [ $# -ge 2 ] || die "--wifi-ssid needs a network name"; WIFI_SSID=$2; STAGE=1; shift ;;
 	--fat32) MODE=fat32 ;;
 	--label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift ;;
 	--copy) [ $# -ge 2 ] || die "--copy needs FILE[:NAME]"; MODE=fat32; add_copy "$2"; shift ;;
@@ -251,6 +266,8 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ -z "$CONF" ] || [ -f "$CONF" ] || die "no such config: $CONF"
+case $WIFI_SSID in *'
+'*) die "the Wi-Fi name can't contain a line break" ;; esac
 if [ "$MODE" = fat32 ]; then
 	[ -z "$SRC" ] || die "files mode (--fat32/--copy/--revert) takes no installer argument"
 	[ -n "$COPIES" ] || [ "$STAGE" = 1 ] || die "files mode needs at least one --copy (or --stage-agent)"
@@ -259,6 +276,19 @@ fi
 say "Disks:"
 list_disks
 [ "$LIST" = 0 ] || exit 0
+
+if [ -n "$WIFI_SSID" ] && [ -z "$WIFI_PASS" ]; then
+	printf 'Wi-Fi password for "%s" (not shown): ' "$WIFI_SSID"
+	stty -echo 2>/dev/null || true
+	read -r WIFI_PASS || WIFI_PASS=''
+	stty echo 2>/dev/null || true
+	say ""
+fi
+if [ -n "$WIFI_SSID" ]; then
+	[ -n "$WIFI_PASS" ] || die "no Wi-Fi password given; nothing was written"
+	case $WIFI_PASS in *'
+'*) die "the Wi-Fi password can't contain a line break" ;; esac
+fi
 [ -n "$SRC" ] || [ "$MODE" = fat32 ] || usage 2
 
 if [ -n "$DISK" ]; then
@@ -284,7 +314,7 @@ if [ "$MODE" = fat32 ]; then
 	printf '%s' "$COPIES" | while IFS='	' read -r _s _n; do
 		[ -n "$_s" ] && say "    $_n  <-  $_s ($(stat -f %z "$_s") bytes)"
 	done
-	[ "$STAGE" = 0 ] || say "    sunset/  (agent files)"
+	[ "$STAGE" = 0 ] || say "    sunset/, runonce.sh  (setup card: the agent${CONF:+, your config}${WIFI_SSID:+, Wi-Fi \"$WIFI_SSID\"})"
 	printf 'Type %s to continue, anything else to stop: ' "$DISK"
 	read -r answer || answer=''
 	[ "$answer" = "$DISK" ] || die "stopped; nothing was written"

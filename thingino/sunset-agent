@@ -104,15 +104,25 @@ post_json() {
 	fi
 }
 
+# Registering is what tells the server this camera's model and abilities (the
+# setup wizard reads them), so it must get through once. A setup card starts
+# the agent before the camera has Wi-Fi: heartbeat() retries until it works.
+REGISTERED=0
 register() {
-	[ -n "$CLAIM_CODE" ] || return 0
+	[ -n "$CLAIM_CODE" ] || { REGISTERED=1; return 0; }
 	_code=$(post_json /api/cameras/register \
 		"{\"claim_code\":\"$CLAIM_CODE\",\"hardware_id\":\"$(hardware_id)\",\"firmware_version\":\"sunset-agent-$AGENT_VERSION\",\"capabilities\":$(capabilities_json)}" \
 		"$STATE_DIR/register.json")
 	log "register -> HTTP $_code"
+	case "$_code" in
+	200) REGISTERED=1 ;;
+	# The server refused this claim code or hardware id; asking again won't help.
+	4??) REGISTERED=1; log "register refused: $(head -c 200 "$STATE_DIR/register.json" 2>/dev/null)" ;;
+	esac
 }
 
 heartbeat() {
+	[ "$REGISTERED" = 1 ] || register
 	_body="{\"request_placement\":true,\"status\":\"$1\",\"uptime_s\":$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0),\"capabilities\":$(capabilities_json)}"
 	_out="$STATE_DIR/heartbeat.json"
 	_code=$(post_json "/api/cameras/$CAMERA_ID/heartbeat" "$_body" "$_out" auth)

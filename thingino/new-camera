@@ -1,0 +1,148 @@
+#!/bin/sh
+# new-camera: give a Thingino camera its identity and make its setup card.
+#
+# One command per camera. It
+#   1. creates the camera on the server (POST /api/cameras/provision), which
+#      returns its id, its claim code and its device token (shown only once);
+#   2. writes that into a sunset-agent.conf, kept in a private folder;
+#   3. hands the config to prepare-sd, which writes the setup card.
+# Put the card in the camera and power it on: Thingino installs the agent from
+# the card by itself. Whoever sets the camera up then opens the setup URL this
+# prints (print it as a QR code on the camera's sticker).
+#
+# Usage:
+#   CRON_SECRET=... thingino/new-camera [options] <installer>
+#
+#   <installer>            what prepare-sd should write: an installer model
+#                          (wyze-cam-3, sonoff-outdoor-b1p), a .zip or a .img;
+#                          or --fat32 for a camera that already runs Thingino
+#                          (the card then only carries the agent and config)
+#   --label NAME           a name for you to recognise it by (letters, digits,
+#                          . _ -). Default: <camera model>-<date>-<time>
+#   --camera-model ID      wyze-v3 | sonoff-cam-s2 | sonoff-cam-b1p. Guessed
+#                          from the installer model when it can be.
+#   --wifi-ssid NAME       passed to prepare-sd: put this Wi-Fi on the card
+#   --disk diskN           passed to prepare-sd: the card to write
+#   --api URL              the server (default https://sunrisesunset.studio)
+#   --no-card              stop after step 2 (write the card later with --from)
+#   --from DIR             skip step 1: reuse the camera saved in DIR, for a
+#                          second try at the card. Creates nothing on the server.
+#
+# CRON_SECRET is the server's provisioning secret. It is read from the
+# environment, sent only to --api, and never written anywhere.
+#
+# Step 1 WRITES TO PRODUCTION: every run without --from creates a camera row.
+# Each camera's folder is ~/.sunset-cam/cameras/<id>-<label>/ (SUNSET_CAMERAS_DIR
+# to change it). It holds the device token: keep it private.
+set -eu
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+PREPARE_SD=${NEW_CAMERA_PREPARE_SD:-$HERE/prepare-sd}
+CAMERAS_DIR=${SUNSET_CAMERAS_DIR:-$HOME/.sunset-cam/cameras}
+
+die() { printf 'new-camera: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+usage() { sed -n '2,/^set -eu/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# json_field FILE KEY: a string or number from a flat JSON object, empty if absent.
+json_field() {
+	sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\)"\{0,1\}.*/\1/p' "$1" | head -n 1
+}
+
+API=https://sunrisesunset.studio
+LABEL='' MODEL='' WIFI='' DISK='' FROM='' NO_CARD=0 TARGET='' FAT32=0
+while [ $# -gt 0 ]; do
+	case $1 in
+	-h | --help) usage ;;
+	--label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift ;;
+	--camera-model) [ $# -ge 2 ] || die "--camera-model needs a value"; MODEL=$2; shift ;;
+	--wifi-ssid) [ $# -ge 2 ] || die "--wifi-ssid needs a network name"; WIFI=$2; shift ;;
+	--disk) [ $# -ge 2 ] || die "--disk needs a value"; DISK=$2; shift ;;
+	--api) [ $# -ge 2 ] || die "--api needs a URL"; API=${2%/}; shift ;;
+	--from) [ $# -ge 2 ] || die "--from needs a folder"; FROM=$2; shift ;;
+	--no-card) NO_CARD=1 ;;
+	--fat32) FAT32=1 ;;
+	-*) die "unknown option $1 (see --help)" ;;
+	*) [ -z "$TARGET" ] || die "only one installer, please"; TARGET=$1 ;;
+	esac
+	shift
+done
+[ "$FAT32" = 0 ] || [ -z "$TARGET" ] || die "--fat32 takes no installer"
+[ "$NO_CARD" = 1 ] || [ "$FAT32" = 1 ] || [ -n "$TARGET" ] || usage 2
+
+if [ -n "$FROM" ]; then
+	DIR=${FROM%/}
+	CONF=$DIR/sunset-agent.conf
+	[ -f "$CONF" ] || die "no sunset-agent.conf in $DIR"
+	say "Reusing the camera saved in $DIR (nothing created on the server)."
+	[ ! -f "$DIR/setup.txt" ] || cat "$DIR/setup.txt"
+else
+	# Which camera this is: the wizard uses it for the field of view and the mount.
+	if [ -z "$MODEL" ]; then
+		case $TARGET in
+		wyze-cam-3) MODEL=wyze-v3 ;;
+		sonoff-outdoor-b1p) MODEL=sonoff-cam-b1p ;;
+		*) die "say which camera this is with --camera-model (wyze-v3, sonoff-cam-s2, sonoff-cam-b1p)" ;;
+		esac
+	fi
+	case $MODEL in *[!a-z0-9-]* | '') die "bad --camera-model: $MODEL" ;; esac
+	[ -n "$LABEL" ] || LABEL=$MODEL-$(date +%Y%m%d-%H%M%S)
+	case $LABEL in *[!A-Za-z0-9._-]*) die "--label may only use letters, digits, . _ and -" ;; esac
+	[ -n "${CRON_SECRET:-}" ] || die "set CRON_SECRET (the server's provisioning secret) in the environment"
+
+	# The camera's serial isn't known before it is flashed, so the id is made up
+	# here and written into the config; the agent sends what the config says.
+	HARDWARE_ID=thingino-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+
+	umask 077
+	TMP=$(mktemp -d)
+	trap 'rm -rf "$TMP"' EXIT
+	say "Creating camera \"$LABEL\" ($MODEL) on $API ..."
+	# The secret goes to curl on stdin, not on its command line.
+	code=$(printf 'header = "Authorization: Bearer %s"\n' "$CRON_SECRET" |
+		curl -sS -K - --connect-timeout 10 --max-time 30 -o "$TMP/reply.json" -w '%{http_code}' \
+			-H 'Content-Type: application/json' \
+			--data "{\"hardware_id\":\"$HARDWARE_ID\",\"device_class\":\"thingino-$MODEL\",\"label\":\"$LABEL\"}" \
+			"$API/api/cameras/provision") || die "could not reach $API"
+	[ "$code" = 201 ] || die "the server said HTTP $code: $(head -c 200 "$TMP/reply.json" 2>/dev/null)"
+	CAMERA_ID=$(json_field "$TMP/reply.json" camera_id)
+	CLAIM_CODE=$(json_field "$TMP/reply.json" claim_code)
+	DEVICE_TOKEN=$(json_field "$TMP/reply.json" device_token)
+	[ -n "$CAMERA_ID" ] && [ -n "$CLAIM_CODE" ] && [ -n "$DEVICE_TOKEN" ] ||
+		die "the server's reply had no camera_id, claim_code or device_token"
+
+	DIR=$CAMERAS_DIR/$CAMERA_ID-$LABEL
+	mkdir -p "$DIR"
+	CONF=$DIR/sunset-agent.conf
+	cat >"$CONF" <<EOF
+# sunset-agent.conf for camera $CAMERA_ID "$LABEL", made by new-camera on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+# Holds the device token: keep private. Other settings: sunset-agent.conf.example.
+API_BASE="$API"
+CAMERA_ID="$CAMERA_ID"
+DEVICE_TOKEN="$DEVICE_TOKEN"
+CLAIM_CODE="$CLAIM_CODE"
+HARDWARE_ID="$HARDWARE_ID"
+CAMERA_MODEL="$MODEL"
+EOF
+	cat >"$DIR/setup.txt" <<EOF
+Camera $CAMERA_ID "$LABEL" ($MODEL)
+  claim code  $CLAIM_CODE
+  setup URL   $API/setup/$CLAIM_CODE
+EOF
+	cat "$DIR/setup.txt"
+	say "  saved in    $DIR  (holds the device token; keep it private)"
+	say "Print the setup URL as a QR code on the camera's sticker."
+fi
+
+if [ "$NO_CARD" = 1 ]; then
+	say "No card written. Later: thingino/new-camera --from \"$DIR\" <installer>"
+	exit 0
+fi
+
+say ""
+set -- --conf "$CONF"
+[ -z "$WIFI" ] || set -- "$@" --wifi-ssid "$WIFI"
+[ -z "$DISK" ] || set -- "$@" --disk "$DISK"
+if [ "$FAT32" = 1 ]; then set -- "$@" --fat32; else set -- "$@" "$TARGET"; fi
+"$PREPARE_SD" "$@" ||
+	die "the card was not written. The camera already exists on the server; retry with: thingino/new-camera --from \"$DIR\" ..."

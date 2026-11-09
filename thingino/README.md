@@ -23,11 +23,58 @@ Files:
 
 - `sunset-agent`: the agent (`run`, `windows`, `snap`, `heartbeat`).
 - `S99sunset-agent`: init script.
+- `new-camera`: one command per camera: creates it on the server and makes its setup card.
+- `prepare-sd`: writes SD cards (Thingino installer, setup card, revert card). macOS.
+- `card-install.sh`: what a setup card runs on the camera to install the agent.
 - `sunset-agent.conf.example`: config template.
 - Tests: `tests/test_thingino_agent.py` runs the real script under `dash` against a
   mock of the app's endpoints, and checks the sun math against `astral`. It needs
   `dash` and `jct` on PATH (`git clone https://github.com/themactep/jct && make`),
   otherwise it skips.
+
+## Setup card: one command per camera
+
+```sh
+CRON_SECRET=... thingino/new-camera --label wyze-1 wyze-cam-3
+```
+This creates the camera on the server (**it writes to production**), saves its
+config under `~/.sunset-cam/cameras/<id>-wyze-1/`, and writes an SD card that
+both flashes Thingino and installs the agent. It prints the claim code and the
+setup URL: print that URL as a QR code on the camera's sticker.
+
+Then, for whoever sets the camera up:
+1. Put the card in the camera and power it on. Thingino installs.
+2. Join the camera's `THINGINO-XXXX` Wi-Fi from a phone and give it the home
+   network. (Skip this with `--wifi-ssid NAME` when you know the network: the
+   card then carries it.)
+3. Scan the sticker and follow the phone setup.
+
+No SSH, nothing typed into a config file.
+
+- **Already running Thingino** (or no installer for the model, like the Pan
+  v3): `thingino/new-camera --fat32 --camera-model wyze-v3`. The card then
+  carries only the agent and config.
+- **The card failed to write**: `thingino/new-camera --from <the saved folder> wyze-cam-3`
+  retries without creating a second camera.
+- **Agent update for a camera in the field**: `thingino/prepare-sd --fat32 --stage-agent`.
+  The camera keeps its own config.
+
+How it works: Thingino runs `runonce.sh` from the card's root each time the
+card mounts, until it exits 0 (`/lib/mdev/automount`). Ours calls
+`sunset/install.sh` (`card-install.sh` in this repo), which copies the agent
+into place and starts it. The config holds the device token, so it is deleted
+from the card only at the *next* boot, once the installed copy has survived a
+restart. That matters because the card's Thingino installer boots from the same
+card first, and a copy made there would be lost. A Wi-Fi password put on the
+card is removed at the same moment.
+
+**Not yet tried on a camera.** Two things to find out on the bench:
+- Whether the Thingino that the installer card flashes is new enough to run
+  `runonce.sh`. Its bundled images are old (installers issue #73). If nothing
+  happens after first boot, upgrade Thingino (`sysupgrade -f`), or run
+  `sh /mnt/mmcblk0p1/sunset/install.sh` once over SSH.
+- Whether the installer itself runs `runonce.sh` while flashing. The two-boot
+  rule above is there so that this is harmless either way.
 
 ## First-camera test plan
 
@@ -75,7 +122,8 @@ image it chose after first boot (`/etc/os-release`).
    any command that prints a JPEG to stdout.
 
 ### 2. Create the camera in the app
-Two ways. **B is the real flow**; A is a quicker bench test.
+`thingino/new-camera` (above) does B and step 3 in one go. By hand, there are
+two ways. **B is the real flow**; A is a quicker bench test.
 
 **A. Tier0 (quick, aim typed by hand).** From the parent repo (writes to production):
 ```sh
@@ -172,5 +220,5 @@ Thingino too.
 - **Aim** comes from the phone app (path B), or is typed by hand (path A). Cameras on their own swivel stand, rather than a window mount, still need a phone-aim step in the app (issue #499 in the app repo).
 - **Windows** are computed on the camera. The plan is for the server to send the next window in the heartbeat reply; the agent will prefer that when present (issue in the app repo).
 - **`window_id`** uses the UTC date of the sun event, so a Pacific evening sunset carries the next day's date.
-- **Packaging**: for more than a few cameras, bake the agent and init script into a custom Thingino image (`user/common/overlay/` in the Thingino build) and read the config from the SD card.
+- **Packaging**: a setup card installs the agent on stock Thingino (see "Setup card"). A custom Thingino image with the agent baked in (`user/common/overlay/` in the Thingino build) is only needed if the installer's bundled Thingino turns out too old to run the card's `runonce.sh`.
 - Directives (`wipe_wifi`, log shipping) and remote updates (`sysupgrade`) aren't handled yet.
