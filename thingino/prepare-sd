@@ -26,11 +26,31 @@
 #                          autoupdate-full.bin and nothing else.
 #   --label NAME           volume label for --fat32 (default SUNSET)
 #   --disk diskN           the card to write (needed if more than one qualifies)
-#   --stage-agent          after writing, copy sunset-agent, its init script,
-#                          find-status-led and an install script to sunset/ on
-#                          the card
-#   --conf FILE            also stage FILE (a filled-in sunset-agent.conf);
-#                          implies --stage-agent
+#   --stage-agent          after writing, make it a setup card: copy
+#                          sunset-agent, its init script, find-status-led and
+#                          an install script to sunset/, and put a runonce.sh
+#                          at the card's root. Thingino runs runonce.sh when
+#                          the card mounts, so the camera installs the agent
+#                          by itself (no SSH). See thingino/card-install.sh.
+#   --conf FILE            also stage FILE (a filled-in sunset-agent.conf, e.g.
+#                          from thingino/new-camera); implies --stage-agent
+#   --root-pass-file FILE  also stage FILE's first line as the camera's root
+#                          password; implies --stage-agent. A card that carries
+#                          the Wi-Fi skips Thingino's setup page, where that
+#                          password is normally chosen, and would otherwise
+#                          leave the camera as root/root.
+#   --wifi-ssid NAME       also put this Wi-Fi network on the card (uenv.txt),
+#                          so the camera joins it with no setup-network step.
+#                          The password is asked for, or read from
+#                          PREPARE_SD_WIFI_PASS. Only for a camera you know the
+#                          network of. Removed from the card once it has worked.
+#   --bundled-thingino     (image mode) leave the Thingino builds inside the
+#                          installer alone. By default each thingino-*.bin on
+#                          the card is replaced with the current release of
+#                          the same name, checked against its published
+#                          sha256. The installers bundle builds that are months
+#                          old; flashing one means a full upgrade on the camera
+#                          afterwards, which wipes its Wi-Fi and password.
 #   --refresh              re-download the installer even if cached
 #   --list                 show every disk and why it is or isn't writable; writes nothing
 #
@@ -41,6 +61,8 @@ set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 INSTALLERS_URL=${PREPARE_SD_INSTALLERS_URL:-https://github.com/wltechblog/thingino-installers/raw/main}
+# Where thingino-installers' own make_installers.sh takes its firmware from.
+THINGINO_URL=${PREPARE_SD_THINGINO_URL:-https://github.com/themactep/thingino-firmware/releases/latest/download}
 CACHE=${PREPARE_SD_CACHE:-$HOME/Library/Caches/sunset-cam/thingino-installers}
 MAX_BYTES=$((256 * 1000 * 1000 * 1000))
 
@@ -163,6 +185,65 @@ resolve_image() {
 	IMG=$(find "$WORK" -name '*.img')
 }
 
+# ---- current Thingino ---------------------------------------------------------
+
+# attach_image: mounts $IMG read-only and sets IMGVOL to its mount point.
+# hdiutil prints "device<TAB>type<TAB>mount point" per partition.
+attach_image() {
+	IMGVOL=$(hdiutil attach -readonly -nobrowse "$IMG" 2>/dev/null | awk -F'\t' '$3 ~ /^\// {print $3; exit}')
+	[ -n "$IMGVOL" ] || die "could not mount the image to read it (hdiutil attach)"
+}
+detach_image() {
+	[ -z "$IMGVOL" ] || hdiutil detach "$IMGVOL" >/dev/null 2>&1 || true
+	IMGVOL=''
+}
+
+# fetch_firmware NAME BYTES: the current release of NAME, into the cache,
+# checked against its published sha256 and against the size of the build it
+# replaces (the installer writes the file to the whole flash chip).
+fetch_firmware() {
+	_n=$1 _bytes=$2 _dir=$CACHE/firmware
+	_hint="or rerun with --bundled-thingino and upgrade on the camera afterwards"
+	mkdir -p "$_dir"
+	curl -fsSL --connect-timeout 15 -o "$_dir/$_n.sha256sum" "$THINGINO_URL/$_n.sha256sum" ||
+		die "could not get the current Thingino build of $_n; check the network, $_hint. Nothing was written."
+	_want=$(awk '!/^#/ && NF >= 2 {print $1; exit}' "$_dir/$_n.sha256sum")
+	case $_want in *[!0-9a-f]* | '') die "the published checksum for $_n is unreadable; $_hint. Nothing was written." ;; esac
+	if [ ! -f "$_dir/$_n" ] || [ "$(shasum -a 256 "$_dir/$_n" | cut -d' ' -f1)" != "$_want" ]; then
+		say "  downloading $_n"
+		curl -fL --progress-bar --connect-timeout 15 -o "$_dir/$_n.part" "$THINGINO_URL/$_n" ||
+			{ rm -f "$_dir/$_n.part"; die "download of $_n failed; $_hint. Nothing was written."; }
+		[ "$(shasum -a 256 "$_dir/$_n.part" | cut -d' ' -f1)" = "$_want" ] ||
+			{ rm -f "$_dir/$_n.part"; die "$_n does not match its published sha256; $_hint. Nothing was written."; }
+		mv "$_dir/$_n.part" "$_dir/$_n"
+	fi
+	[ "$(stat -f %z "$_dir/$_n")" = "$_bytes" ] ||
+		die "the current $_n is $(stat -f %z "$_dir/$_n") bytes but the installer's is $_bytes; not swapping a different-sized image. Rerun with --bundled-thingino. Nothing was written."
+	say "  $_n: $(sed -n 's/^# *//p' "$_dir/$_n.sha256sum" | tail -n 1)"
+}
+
+# fetch_current_thingino: sets FRESH to the thingino-*.bin names in the image
+# (one per line) after fetching the current release of each. Runs before
+# anything is written, so a failed download costs nothing.
+fetch_current_thingino() {
+	FRESH=''
+	attach_image
+	for _f in "$IMGVOL"/thingino-*.bin; do
+		[ -f "$_f" ] || continue
+		FRESH="$FRESH$(basename "$_f")	$(stat -f %z "$_f")
+"
+	done
+	detach_image
+	if [ -z "$FRESH" ]; then
+		say "  (this installer doesn't keep its firmware as thingino-*.bin; using what it bundles)"
+		return
+	fi
+	say "Current Thingino builds to put on the card:"
+	printf '%s' "$FRESH" | while IFS='	' read -r _n _b; do
+		[ -z "$_n" ] || fetch_firmware "$_n" "$_b" || exit 1
+	done || exit 1
+}
+
 # ---- staging -----------------------------------------------------------------
 
 # mount_point_of DISK: mounts the card's first partition and prints its path.
@@ -186,34 +267,48 @@ copy_verified() {
 	cmp -s "$1" "$2" || die "verification FAILED: $2 doesn't match $1"
 }
 
+# The names on the card are short and unrelated on purpose: Thingino's FAT
+# driver opens "sunset-agent" when asked for "sunset-agent.conf". No name in
+# sunset/ may be the start of another (see card-install.sh).
 stage_agent() {
 	disk=$1 conf=$2
 	mp=$(mount_point_of "$disk")
+	rm -rf "$mp/sunset"   # a reused card: no stale files under older names
 	mkdir -p "$mp/sunset"
-	for f in sunset-agent S99sunset-agent find-status-led; do
-		cp -X "$HERE/$f" "$mp/sunset/$f"
-	done
-	cp -X "$HERE/sunset-agent.conf.example" "$mp/sunset/sunset-agent.conf.example"
-	[ -z "$conf" ] || cp -X "$conf" "$mp/sunset/sunset-agent.conf"
-	cat >"$mp/sunset/install.sh" <<'EOS'
+	copy_verified "$HERE/sunset-agent" "$mp/sunset/agent.sh"
+	copy_verified "$HERE/S99sunset-agent" "$mp/sunset/initd.sh"
+	copy_verified "$HERE/find-status-led" "$mp/sunset/findled.sh"
+	copy_verified "$HERE/sunset-agent.conf.example" "$mp/sunset/example.conf"
+	[ -z "$conf" ] || copy_verified "$conf" "$mp/sunset/camera.conf"
+	if [ -n "$ROOT_PASS_FILE" ]; then
+		head -n 1 "$ROOT_PASS_FILE" >"$mp/sunset/rootpass.txt"
+		say "Put the camera's root password on the card (removed once it is set)."
+	fi
+	copy_verified "$HERE/card-install.sh" "$mp/sunset/install.sh"
+	# Thingino runs this when the card mounts, until it exits 0.
+	cat >"$mp/runonce.sh" <<'EOS'
 #!/bin/sh
-# Run on the camera after Thingino's first boot: sh /mnt/mmcblk0p1/sunset/install.sh
-set -e
-D=$(cd "$(dirname "$0")" && pwd)
-cp "$D/sunset-agent" /usr/sbin/sunset-agent && chmod 755 /usr/sbin/sunset-agent
-cp "$D/find-status-led" /usr/sbin/find-status-led && chmod 755 /usr/sbin/find-status-led
-cp "$D/S99sunset-agent" /etc/init.d/S99sunset-agent && chmod 755 /etc/init.d/S99sunset-agent
-if [ -f "$D/sunset-agent.conf" ]; then
-	cp "$D/sunset-agent.conf" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
-	rm -f "$D/sunset-agent.conf"   # it holds the device token
-	echo "installed /etc/sunset-agent.conf (removed from the card)"
-elif [ ! -f /etc/sunset-agent.conf ]; then
-	cp "$D/sunset-agent.conf.example" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
-	echo "edit /etc/sunset-agent.conf before starting the agent"
-fi
-echo "installed sunset-agent, find-status-led, S99sunset-agent"
+# Sunrise/Sunset setup card: install the agent from this card onto the camera.
+exec sh "$(dirname "$0")/sunset/install.sh" --auto
 EOS
-	say "Staged sunset/ on the card (${conf:+with your config, }run 'sh /mnt/mmcblk0p1/sunset/install.sh' on the camera)."
+	rm -f "$mp/runonce.done"
+	dot_clean -m "$mp" 2>/dev/null || true   # drop the ._* sidecars macOS adds on FAT
+	if [ -n "$WIFI_SSID" ]; then
+		# Keep whatever else the card's uenv.txt holds; replace only our two keys.
+		_u="$mp/uenv.txt"
+		if [ -f "$_u" ]; then
+			grep -v -e '^wlan_ssid=' -e '^wlan_pass=' "$_u" >"$_u.tmp" || true
+			mv "$_u.tmp" "$_u"
+		fi
+		printf 'wlan_ssid=%s\nwlan_pass=%s\n' "$WIFI_SSID" "$WIFI_PASS" >>"$_u"
+		say "Put Wi-Fi \"$WIFI_SSID\" on the card (uenv.txt)."
+	fi
+	if [ -n "$conf" ]; then
+		say "Staged a setup card: the camera installs the agent and this config by itself."
+	else
+		say "Staged the agent, without a config: the camera installs it, then edit /etc/sunset-agent.conf there."
+	fi
+	say "  If nothing happens on the camera (old Thingino): sh /mnt/mmcblk0p1/sunset/install.sh"
 }
 
 # ---- main --------------------------------------------------------------------
@@ -221,6 +316,8 @@ EOS
 [ "$(uname -s)" = Darwin ] || die "macOS only for now (uses diskutil)"
 
 DISK='' STAGE=0 CONF='' REFRESH=0 LIST=0 SRC='' MODE=image LABEL=SUNSET
+ROOT_PASS_FILE='' BUNDLED=0 FRESH='' IMGVOL='' WORK=''
+WIFI_SSID='' WIFI_PASS=${PREPARE_SD_WIFI_PASS:-}
 COPIES=''   # newline-separated "SRC<TAB>NAME"
 add_copy() {
 	_src=${1%%:*}; _name=${1#*:}
@@ -238,6 +335,9 @@ while [ $# -gt 0 ]; do
 	--disk) [ $# -ge 2 ] || die "--disk needs a value"; DISK=${2#/dev/}; DISK=${DISK#r}; shift ;;
 	--stage-agent) STAGE=1 ;;
 	--conf) [ $# -ge 2 ] || die "--conf needs a file"; CONF=$2; STAGE=1; shift ;;
+	--root-pass-file) [ $# -ge 2 ] || die "--root-pass-file needs a file"; ROOT_PASS_FILE=$2; STAGE=1; shift ;;
+	--bundled-thingino) BUNDLED=1 ;;
+	--wifi-ssid) [ $# -ge 2 ] || die "--wifi-ssid needs a network name"; WIFI_SSID=$2; STAGE=1; shift ;;
 	--fat32) MODE=fat32 ;;
 	--label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift ;;
 	--copy) [ $# -ge 2 ] || die "--copy needs FILE[:NAME]"; MODE=fat32; add_copy "$2"; shift ;;
@@ -251,6 +351,18 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ -z "$CONF" ] || [ -f "$CONF" ] || die "no such config: $CONF"
+[ -z "$ROOT_PASS_FILE" ] || [ -s "$ROOT_PASS_FILE" ] || die "no root password in: $ROOT_PASS_FILE"
+case $WIFI_SSID in *'
+'*) die "the Wi-Fi name can't contain a line break" ;; esac
+# These cameras' radios are 2.4 GHz only. A camera given a network it can't see
+# never comes back to its setup hotspot (hold reset 5 s to clear it); that cost
+# twenty minutes on the first Cam v3.
+case $WIFI_SSID in
+*[-_\ .]5[Gg] | *[-_\ .]5[Gg][Hh][Zz])
+	[ -n "${PREPARE_SD_ALLOW_5G_NAME:-}" ] ||
+		die "\"$WIFI_SSID\" looks like a 5 GHz network, which these cameras can't join. Give the 2.4 GHz name (often the same without the ending). If it really is 2.4 GHz, set PREPARE_SD_ALLOW_5G_NAME=1. Nothing was written."
+	;;
+esac
 if [ "$MODE" = fat32 ]; then
 	[ -z "$SRC" ] || die "files mode (--fat32/--copy/--revert) takes no installer argument"
 	[ -n "$COPIES" ] || [ "$STAGE" = 1 ] || die "files mode needs at least one --copy (or --stage-agent)"
@@ -259,6 +371,19 @@ fi
 say "Disks:"
 list_disks
 [ "$LIST" = 0 ] || exit 0
+
+if [ -n "$WIFI_SSID" ] && [ -z "$WIFI_PASS" ]; then
+	printf 'Wi-Fi password for "%s" (not shown): ' "$WIFI_SSID"
+	stty -echo 2>/dev/null || true
+	read -r WIFI_PASS || WIFI_PASS=''
+	stty echo 2>/dev/null || true
+	say ""
+fi
+if [ -n "$WIFI_SSID" ]; then
+	[ -n "$WIFI_PASS" ] || die "no Wi-Fi password given; nothing was written"
+	case $WIFI_PASS in *'
+'*) die "the Wi-Fi password can't contain a line break" ;; esac
+fi
 [ -n "$SRC" ] || [ "$MODE" = fat32 ] || usage 2
 
 if [ -n "$DISK" ]; then
@@ -284,7 +409,7 @@ if [ "$MODE" = fat32 ]; then
 	printf '%s' "$COPIES" | while IFS='	' read -r _s _n; do
 		[ -n "$_s" ] && say "    $_n  <-  $_s ($(stat -f %z "$_s") bytes)"
 	done
-	[ "$STAGE" = 0 ] || say "    sunset/  (agent files)"
+	[ "$STAGE" = 0 ] || say "    sunset/, runonce.sh  (setup card: the agent${CONF:+, your config}${WIFI_SSID:+, Wi-Fi \"$WIFI_SSID\"})"
 	printf 'Type %s to continue, anything else to stop: ' "$DISK"
 	read -r answer || answer=''
 	[ "$answer" = "$DISK" ] || die "stopped; nothing was written"
@@ -306,16 +431,16 @@ fi
 
 say ""
 say "Installer:"
-WORK=''
-trap '[ -z "$WORK" ] || rm -rf "$WORK"' EXIT
+trap '[ -z "$IMGVOL" ] || hdiutil detach "$IMGVOL" >/dev/null 2>&1; [ -z "$WORK" ] || rm -rf "$WORK"' EXIT
 resolve_image "$SRC"
 img_bytes=$(stat -f %z "$IMG")
 check "$DISK"
 [ -z "$REASON" ] || die "refusing $DISK: $REASON"
 [ "$img_bytes" -le "$SIZE" ] || die "the image ($img_bytes bytes) is bigger than $DISK"
+[ "$BUNDLED" = 1 ] || fetch_current_thingino
 
 say ""
-say "About to ERASE this disk and write $(basename "$IMG") ($((img_bytes / 1048576)) MB):"
+say "About to ERASE this disk and write $(basename "$IMG") ($((img_bytes / 1048576)) MB)${FRESH:+, then the current Thingino builds above}:"
 say "  $DESC"
 volumes_on "$DISK"
 printf 'Type %s to continue, anything else to stop: ' "$DISK"
@@ -327,15 +452,41 @@ say "Writing (sudo will ask for your password; this takes a minute)..."
 sudo dd if="$IMG" of="/dev/r$DISK" bs=1m status=progress
 sync
 
+# Verify. A byte-for-byte comparison can't work here: the moment dd closes the
+# device macOS re-reads the partition table, auto-mounts the FAT32 volume and
+# writes .fseventsd/.Spotlight-V100 into it, which also rewrites the FSInfo
+# sector (seen on two cards in a row: "differ: char 1049577" = partition start +
+# the free-cluster count). So check what the camera actually reads: the MBR, and
+# every file in the image against the same file on the card.
 say "Verifying..."
-if [ $((img_bytes % 1048576)) -eq 0 ]; then
-	bs=1m count=$((img_bytes / 1048576))
-else
-	bs=512 count=$(((img_bytes + 511) / 512))
+mbr=$(mktemp)
+sudo dd if="/dev/r$DISK" bs=512 count=1 of="$mbr" 2>/dev/null
+head -c 512 "$IMG" | cmp -s - "$mbr" || { rm -f "$mbr"; die "verification FAILED: the partition table on $DISK doesn't match the image. Try another card."; }
+rm -f "$mbr"
+attach_image
+mp=$(mount_point_of "$DISK")
+bad=0 n=0
+for f in "$IMGVOL"/*; do
+	[ -f "$f" ] || continue
+	n=$((n + 1))
+	if ! cmp -s "$f" "$mp/$(basename "$f")"; then
+		say "  MISMATCH: $(basename "$f")"
+		bad=1
+	fi
+done
+detach_image
+[ "$bad" = 0 ] || die "verification FAILED: files on $DISK don't match the image. Try another card."
+[ "$n" -gt 0 ] || die "verification FAILED: the image holds no files to compare"
+say "  partition table and all $n files match the image"
+
+# Only now, with the installer proven intact, swap in the current builds.
+if [ -n "$FRESH" ]; then
+	printf '%s' "$FRESH" | while IFS='	' read -r _n _b; do
+		[ -n "$_n" ] || continue
+		copy_verified "$CACHE/firmware/$_n" "$mp/$_n"
+		say "  replaced $_n with the current build (verified)"
+	done || exit 1
 fi
-sudo dd if="/dev/r$DISK" bs="$bs" count="$count" 2>/dev/null | head -c "$img_bytes" | cmp -s - "$IMG" ||
-	die "verification FAILED: what's on $DISK doesn't match the image. Try another card."
-say "  card matches the image"
 
 if [ "$STAGE" = 1 ]; then
 	stage_agent "$DISK" "$CONF"

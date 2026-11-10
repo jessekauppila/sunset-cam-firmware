@@ -37,6 +37,7 @@ class MockApp:
         self.calls: list[tuple[str, object]] = []
         self.aimed = False
         self.previews_wanted = 0  # preview frames still wanted by a (pretend) open wizard
+        self.register_replies: list[int] = []  # HTTP statuses for the next register calls, then 200
 
     def handler(self):
         app = self
@@ -59,6 +60,8 @@ class MockApp:
                 auth = self.headers.get("Authorization")
                 if self.path == "/api/cameras/register":
                     app.calls.append(("register", json.loads(raw)))
+                    if app.register_replies:
+                        return self._json(app.register_replies.pop(0), {"error": "not now"})
                     return self._json(200, {"camera_id": 7, "placement_status": "awaiting_aim"})
                 if auth != f"Bearer {TOKEN}":
                     return self._json(401, {"error": "unauthorized"})
@@ -201,6 +204,45 @@ def test_sends_setup_previews_while_the_wizard_watches(server, tmp_path):
     assert "snapshot" not in kinds  # previews are never captures
     # Heartbeats again right after the session ends (the aim may have arrived).
     assert kinds.index("heartbeat", kinds.index("preview")) > kinds.index("preview")
+
+
+def _kinds(app):
+    return [c[0] for c in app.calls]
+
+
+def test_keeps_registering_until_the_server_answers(server, tmp_path):
+    """A setup card starts the agent before the camera has Wi-Fi. Registration
+    carries the model and capabilities the wizard needs, so it must be retried."""
+    app, base = server
+    app.aimed = True
+    app.register_replies = [503, 503]
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    deadline = time.time() + 20
+    while time.time() < deadline and _kinds(app).count("heartbeat") < 5:
+        time.sleep(0.2)
+    proc.terminate()
+    proc.wait(5)
+    # Two refusals, one success, then no more: it doesn't re-register every heartbeat.
+    assert _kinds(app).count("register") == 3
+    assert _kinds(app).count("heartbeat") >= 5
+
+
+def test_stops_registering_when_the_server_refuses_the_claim(server, tmp_path):
+    app, base = server
+    app.aimed = True
+    app.register_replies = [409]  # hardware id mismatch: retrying can't fix it
+    conf = _write_conf(tmp_path, base, HEARTBEAT_S="1")
+    proc = subprocess.Popen(["dash", str(AGENT), "run"], env=_env(tmp_path, conf),
+                            stderr=subprocess.DEVNULL)
+    deadline = time.time() + 15
+    while time.time() < deadline and _kinds(app).count("heartbeat") < 3:
+        time.sleep(0.2)
+    proc.terminate()
+    proc.wait(5)
+    assert _kinds(app).count("register") == 1
+    assert _kinds(app).count("heartbeat") >= 3
 
 
 def test_sun_windows_match_astral(tmp_path):
