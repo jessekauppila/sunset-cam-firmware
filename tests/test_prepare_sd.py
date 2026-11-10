@@ -126,14 +126,15 @@ def env(tmp_path):
     imgvol = fake / "imgvol"  # the files inside the installer image
     imgvol.mkdir()
     (imgvol / "factory_t31_ZMC6tiIDQN").write_bytes(os.urandom(2048))
-    (imgvol / "thingino-board_a.bin").write_bytes(os.urandom(4096))
+    # Starts with zeros so the fakes' "flip a byte to X" always changes it.
+    (imgvol / "thingino-board_a.bin").write_bytes(bytes(16) + os.urandom(4080))
     (imgvol / "thingino-board_b.bin").write_bytes(os.urandom(4096))
     for n, body in (("diskutil", FAKE_DISKUTIL), ("sudo", FAKE_SUDO), ("cp", FAKE_CP),
                     ("hdiutil", FAKE_HDIUTIL)):
         (bin_ / n).write_text(body)
         (bin_ / n).chmod(0o755)
     img = tmp_path / "sd.img"
-    img.write_bytes(os.urandom(3 * 1024 * 1024))
+    img.write_bytes(bytes(16) + os.urandom(3 * 1024 * 1024 - 16))
     e = dict(os.environ, FAKE_DIR=str(fake), PATH=f"{bin_}:{os.environ['PATH']}",
              PREPARE_SD_CACHE=str(tmp_path / "cache"))
     return fake, img, e
