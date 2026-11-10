@@ -18,7 +18,14 @@ install — doesn't repeat any of it. Companion to `thingino/README.md`
 | Portal | "Initial configuration": hostname `thingino-wyze-cam3-5336`, MAC `02:be:a1:cf:08:1a`, build `wyze_cam3_t31x_gc2053_atbm6031` (2026-08-14). Set root password, **typed the Wi-Fi SSID and password by hand** (no scan list). | — |
 | Wrong band | Typed `GL-X3000-ced-5G`. The Cam v3 radio is **2.4 GHz only**; the portal accepted it with no warning. Camera never appeared on the LAN (~15 min of scanning from a Mac that was also on a different subnet — the GL-X3000 travel router — before the cause was found). | ~20 min lost |
 | No fallback | Power-cycling did **not** bring the hotspot back. Thingino's `S38wpa_supplicant` only enters portal mode when no SSID/psk is saved; with a wrong SSID it retries forever. | ~10 min |
-| Reset Wi-Fi | **Hold the reset button 5 s** (chime) → `wlan reset; reboot` → portal returns. (20 s = factory reset; a tap = speaks the IP.) Re-enter with `GL-X3000-ced` (2.4 GHz) and the router-label PSK. _(in progress)_ | |
+| Reset Wi-Fi | **Hold the reset button 5 s** (chime) → `wlan reset; reboot` → portal returns. (20 s = factory reset; a tap = speaks the IP.) Re-entered with `GL-X3000-ced` (2.4 GHz) and the router-label PSK. Camera on the LAN at `192.168.8.134`. | — |
+| Checks | `date -u` right, TLS ok, `jct`/`curl`/`prudyntctl` present, snapshot 95 KB. SoC serial `246783086410657259533030385283198275336` (t31zx), sensor GC2053, Wi-Fi ATBM6031. | — |
+| Backup | Copied `WYZE_BACKUP_jmIKMc/` off the card over SSH to `~/Documents/sunset-cam-backups/wyze-cam-v3-5336/` (combined_backup.bin sha256 `0d0709f5…e21ece`), with a README. | — |
+| Wi-Fi on the card | The camera wrote its own SSID + derived 64-hex PSK into `/mnt/mmcblk0p1/uenv.txt` (`wlan_ssid=`, `wlan_pass=`; `wlan configure` accepts the hex PSK, so no plaintext anywhere). | — |
+| `sysupgrade -f` | Aug-14 → **2026-11-05** build. SSH drops mid-flash (expected; services are killed). First boot after it came up in the portal (SD not ready?), **second boot read `uenv.txt` and joined Wi-Fi with no portal**. Root password back to default `root`/`root`; the SSH key is gone; re-set both. | ~15 min incl. a portal timeout (10 min) |
+| Agent install | `install.sh` from the card **ate the agent**: on Thingino's FAT driver a lookup of a *missing* long name (`sunset-agent.conf`) resolves to a sibling with the same 8.3 prefix (`sunset-agent`), so `[ -f ]` was true, the script was copied as the config and then deleted from the card. Fixed by hand over SSH; `install.sh` now checks the directory listing. | ~10 min |
+| API host | The agent's default `API_BASE` (apex `sunrisesunset.studio`) answers **307 → www** and curl doesn't follow it; `new-camera` hit the same. Default switched to `www.`. | — |
+| Provisioning | `new-camera --no-card` returned 401: production `CRON_SECRET` matched neither local copy and is marked Sensitive in Vercel (unreadable). Rotated it; dashboard Redeploy and `vercel redeploy` were both **Canceled** by the repo's Ignored Build Step (no app change), `vercel deploy --prod` exceeds the 10 MB upload limit. Fix: PR #518 in the map repo (`[deploy]` commit marker); merging it triggers the build. _(in progress)_ | ~30 min |
 
 ## Fixes made during the session
 
@@ -47,6 +54,15 @@ install — doesn't repeat any of it. Companion to `thingino/README.md`
   portal. Hold reset 5 s (one chime) to wipe Wi-Fi and reboot into it.
 - **After the portal, tap reset once:** the camera speaks its IP address
   when it's on the network. Saves the router-DHCP-table hunt.
+- **FAT name lookups lie on the camera.** Thingino's exfat/vfat driver matches
+  a missing long name to any sibling sharing its 8.3 prefix. Never `[ -f ]` a
+  path on the card to test existence; list the directory. Keep card filenames
+  short and distinct where possible.
+- **API host is `www.`** The apex 307s and busybox curl without `-L` fails
+  silently with it. (The Pi uses `requests`, which follows 307s.)
+- **Vercel env rotation needs a real commit.** With the repo's ignore-build
+  step, Redeploy is a no-op; use `git commit --allow-empty -m "... [deploy]"`
+  once map PR #518 is in. Sensitive env vars cannot be read back; rotate.
 - **Save the backup.** `WYZE_BACKUP_*/combined_backup.bin` on the card is this
   unit's only way back to Wyze. Copy it off the card before reusing the card.
 
@@ -82,6 +98,10 @@ phone/app already knows the network).
 5. **Progress is invisible.** A user watching a red/blue LED for four minutes
    has no idea whether it's working. The agent should heartbeat "installing /
    installed / online" to the app so the phone shows progress.
-6. **No automatic backup custody.** The stock-firmware backup lives on the SD
+6. **Provisioning depends on a laptop with the right secret.** Tonight's
+   401s cost half an hour and a secret rotation. The card flow should carry
+   a pre-minted token (setup-card branch does), and the secret should live in
+   one place (`.env.local` = production).
+7. **No automatic backup custody.** The stock-firmware backup lives on the SD
    card and is lost if the card is reused. The install flow should copy it to
    the cloud, keyed by hardware id.
