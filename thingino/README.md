@@ -35,46 +35,115 @@ Files:
 ## Setup card: one command per camera
 
 ```sh
-CRON_SECRET=... thingino/new-camera --label wyze-1 wyze-cam-3
+CRON_SECRET=... thingino/new-camera --label wyze-2 --wifi-ssid "Home-2.4" wyze-cam-3
 ```
 This creates the camera on the server (**it writes to production**), saves its
-config under `~/.sunset-cam/cameras/<id>-wyze-1/`, and writes an SD card that
-both flashes Thingino and installs the agent. It prints the claim code and the
-setup URL: print that URL as a QR code on the camera's sticker.
+config under `~/.sunset-cam/cameras/<id>-wyze-2/`, and writes one SD card that
+
+- flashes the **current** Thingino release (not the months-old build inside
+  the installer, so there is no `sysupgrade -f` and no second Wi-Fi setup),
+- installs the agent and this camera's config,
+- carries the Wi-Fi (asked for once, on the Mac; a `-5G` name is refused, the
+  cameras are 2.4 GHz only),
+- sets a random root password, saved beside the config as `rootpass.txt`.
+
+It prints the claim code and the setup URL: print that URL as a QR code on the
+camera's sticker.
 
 Then, for whoever sets the camera up:
-1. Put the card in the camera and power it on. Thingino installs.
-2. Join the camera's `THINGINO-XXXX` Wi-Fi from a phone and give it the home
-   network. (Skip this with `--wifi-ssid NAME` when you know the network: the
-   card then carries it.)
-3. Scan the sticker and follow the phone setup.
+1. Put the card in the camera and power it on. Wait for the light to stop
+   cycling red/blue (about four minutes).
+2. Scan the sticker and follow the phone setup.
 
-No SSH, nothing typed into a config file.
+Without `--wifi-ssid` there is one more step between those: join the camera's
+`THINGINO-XXXX` Wi-Fi (password `thingino`) from a phone and give it the home
+network and a root password.
+
+No SSH, nothing typed into a config file. Variations:
 
 - **Already running Thingino** (or no installer for the model, like the Pan
   v3): `thingino/new-camera --fat32 --camera-model wyze-v3`. The card then
   carries only the agent and config.
 - **The card failed to write**: `thingino/new-camera --from <the saved folder> wyze-cam-3`
-  retries without creating a second camera.
+  retries without creating a second camera (and keeps its root password).
 - **Agent update for a camera in the field**: `thingino/prepare-sd --fat32 --stage-agent`.
   The camera keeps its own config.
+- **Offline, or the release won't download**: `prepare-sd --bundled-thingino`
+  writes the installer as it comes. Expect the upgrade and the second Wi-Fi
+  setup described in the test plan below.
 
-How it works: Thingino runs `runonce.sh` from the card's root each time the
+### How it works
+
+**Current Thingino.** A thingino-installers card is plain files on FAT32: a
+boot file plus one 16 MB `thingino-<board>.bin` per hardware variant, which
+the installer's own build script downloads from Thingino's latest release.
+`prepare-sd` writes and verifies the installer image, then replaces each
+`thingino-*.bin` with today's release of the same name. Each download is
+checked against the `.sha256sum` Thingino publishes with it and must be the
+same size as the file it replaces; if any of that fails, the script stops
+before the card is touched.
+
+**Self-install.** Thingino runs `runonce.sh` from the card's root each time the
 card mounts, until it exits 0 (`/lib/mdev/automount`). Ours calls
 `sunset/install.sh` (`card-install.sh` in this repo), which copies the agent
-into place and starts it. The config holds the device token, so it is deleted
-from the card only at the *next* boot, once the installed copy has survived a
-restart. That matters because the card's Thingino installer boots from the same
-card first, and a copy made there would be lost. A Wi-Fi password put on the
-card is removed at the same moment.
+into place, sets the root password and starts the agent. The card's secrets
+(the config with the device token, the root password, the Wi-Fi password in
+`uenv.txt`) are deleted from the card only at the *next* boot, once the
+installed copy has survived a restart. That matters because the card's
+installer boots from the same card first, and a copy made there would be lost.
 
-**Not yet tried on a camera.** Two things to find out on the bench:
-- Whether the Thingino that the installer card flashes is new enough to run
-  `runonce.sh`. Its bundled images are old (installers issue #73). If nothing
-  happens after first boot, upgrade Thingino (`sysupgrade -f`), or run
-  `sh /mnt/mmcblk0p1/sunset/install.sh` once over SSH.
+**File names on the card.** On the camera, opening a name on the card can
+return a *different file whose name is the start of it*. With `sunset-agent`
+on the card, `sunset-agent.conf` opened `sunset-agent`, whether or not a real
+`sunset-agent.conf` was there, and the first Cam v3 installed the agent script
+as its own config. The Mac reads the same card correctly, so nothing shows up
+until the camera runs. Hence the card's own names, none of which begins
+another:
+
+| On the card (`sunset/`) | Becomes, on the camera |
+|---|---|
+| `agent.sh` | `/usr/sbin/sunset-agent` |
+| `initd.sh` | `/etc/init.d/S99sunset-agent` |
+| `findled.sh` | `/usr/sbin/find-status-led` |
+| `camera.conf` | `/etc/sunset-agent.conf` |
+| `example.conf` | the same, as a template, when the card has no config |
+| `rootpass.txt` | root's password |
+| `install.sh`, `stamp.txt` | (the installer and its note of which boot it ran in) |
+
+Rules for anything that runs on the camera and touches the card: never give
+two files names where one starts the other; test for a file with the folder's
+listing, not `[ -f ]`; don't create work files on the card. And Thingino's
+busybox is small (no `cmp`, for one): `tests/test_card_install.py` runs the
+script with only the commands seen on a Cam v3.
+
+### What has been tried, and what hasn't
+
+Tried on camera 3 (Cam v3, Thingino 2026-11-05):
+- `runonce.sh` is run at mount by this build, and `runonce.done` stops it.
+- `install.sh`, run on the camera against a scratch copy of the card's layout
+  on its own SD card and a temporary root: first boot installs and starts,
+  the same boot again changes nothing, the next boot removes the config, the
+  root password and the Wi-Fi lines and exits 0. (This is where the missing
+  `cmp` and the file-name problem were found.)
+- The release swap, against the real `wyze-cam-3` installer image and the real
+  release with a stand-in for the card: all three builds downloaded, checked
+  and replaced. The `t31x_gc2053_atbm6031` build it put on the card is
+  byte-for-byte the one camera 3 is running.
+
+Not tried, because it needs a camera that still runs Wyze firmware:
+- A whole flash from a card with the swapped builds. The reasoning is that the
+  card is then exactly what the installer's build script would produce today,
+  but no camera has been flashed from one yet. Keep the first one on the bench
+  with the Mac nearby, and use `--bundled-thingino` if it misbehaves.
+- Whether a freshly flashed camera reads the Wi-Fi from `uenv.txt` on its very
+  first boot. After the `sysupgrade` on camera 3 it took a second boot (the
+  first came up in the setup hotspot). If that happens, unplug and replug.
 - Whether the installer itself runs `runonce.sh` while flashing. The two-boot
-  rule above is there so that this is harmless either way.
+  rule is there so that this is harmless either way.
+- Setting the root password for real: on the camera the script ran with a
+  stand-in for `chpasswd`. It makes the same call Thingino's setup page makes
+  (`chpasswd -c sha512`), and says so loudly if it fails. Until one camera
+  proves it, check `ssh root@<camera>` refuses `root` as the password.
 
 ## First-camera test plan
 
@@ -103,8 +172,10 @@ image it chose after first boot (`/etc/os-release`).
      `WYZE_BACKUP_*/combined_backup.bin` on the card. Copy it off; it is the
      only way back to Wyze for this unit. Make the revert card with
      `thingino/prepare-sd --revert combined_backup.bin`.
-   - The bundled Thingino images are old (installers issue #73): expect to
-     `sysupgrade -f` and set up Wi-Fi a second time.
+   - The installer's bundled Thingino builds are old (installers issue #73).
+     `prepare-sd` replaces them with the current release as it writes the
+     card; with `--bundled-thingino`, expect to `sysupgrade -f` and set up
+     Wi-Fi a second time.
    - Known failure (installers issue #72, one early-revision unit): a
      red/blue/purple LED cycle for about a minute, then solid red, repeating.
      If you see that, stop and read the issue before trying more cards.

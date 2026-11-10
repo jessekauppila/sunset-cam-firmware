@@ -21,9 +21,15 @@
 #                          . _ -). Default: <camera model>-<date>-<time>
 #   --camera-model ID      wyze-v3 | sonoff-cam-s2 | sonoff-cam-b1p. Guessed
 #                          from the installer model when it can be.
-#   --wifi-ssid NAME       passed to prepare-sd: put this Wi-Fi on the card
+#   --wifi-ssid NAME       passed to prepare-sd: put this Wi-Fi on the card.
+#                          The camera then never shows Thingino's setup page,
+#                          where its root password is normally chosen, so a
+#                          random one is made, saved in the camera's folder
+#                          (rootpass.txt) and set by the card.
 #   --disk diskN           passed to prepare-sd: the card to write
-#   --api URL              the server (default https://sunrisesunset.studio)
+#   --api URL              the server (default https://www.sunrisesunset.studio;
+#                          the bare domain only redirects, which neither this
+#                          script nor the camera follows)
 #   --no-card              stop after step 2 (write the card later with --from)
 #   --from DIR             skip step 1: reuse the camera saved in DIR, for a
 #                          second try at the card. Creates nothing on the server.
@@ -49,7 +55,7 @@ json_field() {
 	sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\)"\{0,1\}.*/\1/p' "$1" | head -n 1
 }
 
-API=https://sunrisesunset.studio
+API=https://www.sunrisesunset.studio
 LABEL='' MODEL='' WIFI='' DISK='' FROM='' NO_CARD=0 TARGET='' FAT32=0
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -104,7 +110,11 @@ else
 			-H 'Content-Type: application/json' \
 			--data "{\"hardware_id\":\"$HARDWARE_ID\",\"device_class\":\"thingino-$MODEL\",\"label\":\"$LABEL\"}" \
 			"$API/api/cameras/provision") || die "could not reach $API"
-	[ "$code" = 201 ] || die "the server said HTTP $code: $(head -c 200 "$TMP/reply.json" 2>/dev/null)"
+	case $code in
+	201) ;;
+	30?) die "$API answered HTTP $code (a redirect). Use the address it redirects to, e.g. --api https://www.sunrisesunset.studio. Nothing was created." ;;
+	*) die "the server said HTTP $code: $(head -c 200 "$TMP/reply.json" 2>/dev/null)" ;;
+	esac
 	CAMERA_ID=$(json_field "$TMP/reply.json" camera_id)
 	CLAIM_CODE=$(json_field "$TMP/reply.json" claim_code)
 	DEVICE_TOKEN=$(json_field "$TMP/reply.json" device_token)
@@ -141,7 +151,17 @@ fi
 
 say ""
 set -- --conf "$CONF"
-[ -z "$WIFI" ] || set -- "$@" --wifi-ssid "$WIFI"
+if [ -n "$WIFI" ]; then
+	# With Wi-Fi on the card nobody is asked to choose a root password, and
+	# Thingino's default is root/root. Make one; the card sets it.
+	PASSFILE=$DIR/rootpass.txt
+	if [ ! -s "$PASSFILE" ]; then
+		(umask 077 && od -An -N10 -tx1 /dev/urandom | tr -d ' \n' >"$PASSFILE" && echo >>"$PASSFILE") ||
+			die "could not save a root password in $DIR"
+	fi
+	say "The camera's root password (ssh, Thingino's web page) is in $PASSFILE"
+	set -- "$@" --wifi-ssid "$WIFI" --root-pass-file "$PASSFILE"
+fi
 [ -z "$DISK" ] || set -- "$@" --disk "$DISK"
 if [ "$FAT32" = 1 ]; then set -- "$@" --fat32; else set -- "$@" "$TARGET"; fi
 "$PREPARE_SD" "$@" ||

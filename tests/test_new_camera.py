@@ -111,13 +111,52 @@ def test_creates_the_camera_saves_its_config_and_writes_the_card(rig):
 
     assert f"{base}/setup/SUNSET-AAAA-BBBB" in r.stdout
     assert f"{base}/setup/SUNSET-AAAA-BBBB" in (folder / "setup.txt").read_text()
-    assert sd_args(rig) == ["--conf", str(conf), "--wifi-ssid", "Home Net", "--disk", "disk5", "wyze-cam-3"]
+    # Wi-Fi on the card means nobody is asked for a root password: one is made.
+    passfile = folder / "rootpass.txt"
+    password = passfile.read_text().strip()
+    assert re.fullmatch(r"[0-9a-f]{20}", password)
+    assert stat.S_IMODE(passfile.stat().st_mode) == 0o600
+    assert sd_args(rig) == ["--conf", str(conf), "--wifi-ssid", "Home Net",
+                            "--root-pass-file", str(passfile), "--disk", "disk5", "wyze-cam-3"]
 
-    # The provisioning secret is used once and kept nowhere; the token isn't printed.
+    # The provisioning secret is used once and kept nowhere; the token and the
+    # root password aren't printed.
     for f in folder.iterdir():
         assert SECRET not in f.read_text()
     assert SECRET not in r.stdout + r.stderr
     assert TOKEN not in r.stdout + r.stderr
+    assert password not in r.stdout + r.stderr
+
+
+def test_a_second_card_for_the_same_camera_keeps_its_root_password(rig):
+    _srv, _base, _env, tmp = rig
+    assert run(rig, "--label", "c1", "--wifi-ssid", "Home", "wyze-cam-3").returncode == 0
+    passfile = tmp / "cameras" / "12-c1" / "rootpass.txt"
+    first = passfile.read_text()
+    r = run(rig, "--from", str(passfile.parent), "--wifi-ssid", "Home", "wyze-cam-3")
+    assert r.returncode == 0, r.stderr
+    assert passfile.read_text() == first
+    assert "--root-pass-file" in sd_args(rig)
+
+
+def test_without_wifi_the_setup_page_asks_for_the_password_so_none_is_made(rig):
+    assert run(rig, "--label", "c1", "wyze-cam-3").returncode == 0
+    assert not (rig[3] / "cameras" / "12-c1" / "rootpass.txt").exists()
+    assert "--root-pass-file" not in sd_args(rig)
+
+
+def test_the_default_server_is_the_www_host():
+    # The bare domain answers 307; curl here and on the camera doesn't follow it.
+    assert re.search(r"^API=https://www\.sunrisesunset\.studio$", SCRIPT.read_text(), re.M)
+
+
+def test_a_redirect_is_explained_and_creates_nothing(rig):
+    srv, _base, _env, tmp = rig
+    srv.status = 307
+    r = run(rig, "wyze-cam-3")
+    assert r.returncode != 0
+    assert "redirect" in r.stderr and "www.sunrisesunset.studio" in r.stderr
+    assert not (tmp / "cameras").exists() and sd_args(rig) is None
 
 
 def test_needs_the_secret_before_it_asks_the_server_anything(rig):

@@ -23,7 +23,7 @@ install — doesn't repeat any of it. Companion to `thingino/README.md`
 | Backup | Copied `WYZE_BACKUP_jmIKMc/` off the card over SSH to `~/Documents/sunset-cam-backups/wyze-cam-v3-5336/` (combined_backup.bin sha256 `0d0709f5…e21ece`), with a README. | — |
 | Wi-Fi on the card | The camera wrote its own SSID + derived 64-hex PSK into `/mnt/mmcblk0p1/uenv.txt` (`wlan_ssid=`, `wlan_pass=`; `wlan configure` accepts the hex PSK, so no plaintext anywhere). | — |
 | `sysupgrade -f` | Aug-14 → **2026-11-05** build. SSH drops mid-flash (expected; services are killed). First boot after it came up in the portal (SD not ready?), **second boot read `uenv.txt` and joined Wi-Fi with no portal**. Root password back to default `root`/`root`; the SSH key is gone; re-set both. | ~15 min incl. a portal timeout (10 min) |
-| Agent install | `install.sh` from the card **ate the agent**: on Thingino's FAT driver a lookup of a *missing* long name (`sunset-agent.conf`) resolves to a sibling with the same 8.3 prefix (`sunset-agent`), so `[ -f ]` was true, the script was copied as the config and then deleted from the card. Fixed by hand over SSH; `install.sh` now checks the directory listing. | ~10 min |
+| Agent install | `install.sh` from the card **ate the agent**: on the camera, a name on the card opens any file whose name is the *start* of it (`sunset-agent.conf` opens `sunset-agent`), so `[ -f ]` was true, the script was copied as the config and then deleted from the card. Fixed by hand over SSH. (Measured properly the next day: see "The card's file names" below.) | ~10 min |
 | API host | The agent's default `API_BASE` (apex `sunrisesunset.studio`) answers **307 → www** and curl doesn't follow it; `new-camera` hit the same. Default switched to `www.`. | — |
 | Provisioning | `new-camera --no-card` returned 401: production `CRON_SECRET` matched neither local copy and is marked Sensitive in Vercel (unreadable). Rotated it; dashboard Redeploy and `vercel redeploy` were both **Canceled** by the repo's Ignored Build Step (no app change), `vercel deploy --prod` exceeds the 10 MB upload limit. Fix: PR #518 in the map repo (`[deploy]` commit marker); merging it built production with the new secret. | ~45 min |
 | Provisioned | `new-camera --no-card --api https://www.sunrisesunset.studio --label wyze-1 --camera-model wyze-v3` → **camera 3 "wyze-1"**, config in `~/.sunset-cam/cameras/3-wyze-1/`. Pushed to the camera over SSH with the template defaults appended. | — |
@@ -56,10 +56,10 @@ install — doesn't repeat any of it. Companion to `thingino/README.md`
   portal. Hold reset 5 s (one chime) to wipe Wi-Fi and reboot into it.
 - **After the portal, tap reset once:** the camera speaks its IP address
   when it's on the network. Saves the router-DHCP-table hunt.
-- **FAT name lookups lie on the camera.** Thingino's exfat/vfat driver matches
-  a missing long name to any sibling sharing its 8.3 prefix. Never `[ -f ]` a
-  path on the card to test existence; list the directory. Keep card filenames
-  short and distinct where possible.
+- **Name lookups on the card lie on the camera.** A name opens any file whose
+  name is the start of it, even when the longer file exists. No two names on
+  the card may be related that way; never `[ -f ]` a path on the card, list
+  the folder. See `docs/solutions/integration-issues/thingino-sd-card-opens-a-file-whose-name-starts-the-one-asked-for.md`.
 - **API host is `www.`** The apex 307s and busybox curl without `-L` fails
   silently with it. (The Pi uses `requests`, which follows 307s.)
 - **Vercel env rotation needs a real commit.** With the repo's ignore-build
@@ -136,3 +136,35 @@ Read off the live camera (build 2026-11-05) and the app, not assumed:
   Wi-Fi onboarding design (sub-project E, `Sunset-Cam-XXXX` hotspot with a
   network dropdown) and its E–F contract already describe the flow a Thingino
   camera should plug into.
+
+## The card's file names, and what changed in the flow (2026-11-10)
+
+Measured on the camera with scratch folders on its card:
+
+- **The lookup problem is worse than first logged.** A stored name that is the
+  start of the name asked for wins, *even when the longer file exists*: with
+  `sunset-agent`, `sunset-agent.conf` and `sunset-agent.conf.example` all on
+  the card, `sunset-agent.conf` read back the agent script. So the setup card
+  as designed would have installed the agent as its config on every camera.
+  The folder listing is truthful. Names made on the camera that fit 8.3 did
+  not show it.
+- **No `cmp` on the camera.** `card-install.sh` used it to decide when to
+  remove the secrets from the card, so it could never have finished.
+
+What `feat/thingino-setup-card` does about this night's list:
+
+| Problem tonight | Now |
+|---|---|
+| Old bundled Thingino, `sysupgrade -f`, second portal pass (~15 min) | `prepare-sd` replaces each `thingino-*.bin` on the card with the current release, sha256-checked. Run against the real installer image: the `t31x_gc2053_atbm6031` build it put on the card is byte-identical to the one camera 3 runs after its upgrade. |
+| Agent installed by hand over SSH; the card ate the agent | The card installs it (`runonce.sh`), with file names that can't collide. Run on the camera against a scratch card layout: install, start, tidy at the next boot. |
+| Wi-Fi typed into the portal; 5 GHz name accepted (~30 min) | `new-camera --wifi-ssid`: asked once on the Mac, carried on the card; a `-5G`/`5GHz` name is refused. |
+| Root password back to `root` after the portal is skipped | `new-camera` makes one, keeps it in the camera's folder, the card sets it. |
+| `new-camera` and the agent pointed at the apex host (307) | Default is `https://www.sunrisesunset.studio`; a redirect is explained. |
+| Verify failed on every card | Fixed in #23 (file-level verify). |
+
+Still open: a whole flash from such a card has not been done (camera 3 is
+already flashed; it needs a second Cam v3), and three first-boot behaviours
+are unconfirmed. They are listed in `thingino/README.md` under "What has been
+tried, and what hasn't". Not addressed here: progress shown on the phone, the
+app's waiting screen keying off a heartbeat, backup upload, and provisioning
+without the admin secret.

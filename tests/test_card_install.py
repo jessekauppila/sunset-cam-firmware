@@ -8,6 +8,7 @@ once the installed copy has survived a reboot.
 
 from __future__ import annotations
 
+import re
 import shutil
 import stat
 import subprocess
@@ -16,11 +17,20 @@ from pathlib import Path
 import pytest
 
 THINGINO = Path(__file__).resolve().parent.parent / "thingino"
-SH = shutil.which("dash") or "sh"
+SH = shutil.which("dash") or shutil.which("sh")
+
+# What the script may call: commands seen on the Cam v3 (Thingino 2026-11-05).
+# Its busybox has no cmp, which the first version of the script relied on; the
+# tests passed on a Mac and the card could never have finished on a camera. So
+# the script runs here with these and nothing else on its PATH.
+CAMERA_COMMANDS = ("cat cp chmod mkdir rm ls grep head tr dirname basename sed awk cut "
+                   "mktemp mv touch sleep wc sort").split()
 
 CONF = 'CAMERA_ID="7"\nDEVICE_TOKEN="secret-token"\n'
 # Stands in for the agent's init script: records how it was called.
 FAKE_INIT = '#!/bin/sh\necho "$1" >>"$(dirname "$0")/../../init.log"\n'
+# Stands in for chpasswd: records the "user:password" line it was given.
+FAKE_CHPASSWD = '#!/bin/sh\ncat >>"$CHPASSWD_LOG"\n'
 
 
 class Rig:
@@ -29,12 +39,20 @@ class Rig:
         self.sunset = self.card / "sunset"
         self.sunset.mkdir(parents=True)
         shutil.copy(THINGINO / "card-install.sh", self.sunset / "install.sh")
-        (self.sunset / "sunset-agent").write_text("#!/bin/sh\n# agent\n")
-        (self.sunset / "find-status-led").write_text("#!/bin/sh\n# led\n")
-        (self.sunset / "S99sunset-agent").write_text(FAKE_INIT)
-        (self.sunset / "sunset-agent.conf.example").write_text('CAMERA_ID=""\n')
-        (self.sunset / "sunset-agent.conf").write_text(CONF)
+        (self.sunset / "agent.sh").write_text("#!/bin/sh\n# agent\n")
+        (self.sunset / "findled.sh").write_text("#!/bin/sh\n# led\n")
+        (self.sunset / "initd.sh").write_text(FAKE_INIT)
+        (self.sunset / "example.conf").write_text('CAMERA_ID=""\n')
+        (self.sunset / "camera.conf").write_text(CONF)
         self.tmp = tmp
+        self.chpasswd = tmp / "chpasswd"
+        self.chpasswd.write_text(FAKE_CHPASSWD)
+        self.chpasswd.chmod(0o755)
+        self.chpasswd_log = tmp / "chpasswd.log"
+        self.bin = tmp / "camera-bin"
+        self.bin.mkdir()
+        for c in CAMERA_COMMANDS:
+            (self.bin / c).symlink_to(shutil.which(c))
         self.root = self.new_camera("root")
 
     def new_camera(self, name: str) -> Path:
@@ -50,12 +68,21 @@ class Rig:
 
     def run(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run([SH, str(self.sunset / "install.sh"), *args],
-                              env={"SUNSET_ROOT": str(self.root), "PATH": "/usr/bin:/bin"},
+                              env={"SUNSET_ROOT": str(self.root), "PATH": str(self.bin),
+                                   "SUNSET_CHPASSWD": str(self.chpasswd),
+                                   "CHPASSWD_LOG": str(self.chpasswd_log)},
                               capture_output=True, text=True)
 
     @property
     def card_conf(self) -> Path:
-        return self.sunset / "sunset-agent.conf"
+        return self.sunset / "camera.conf"
+
+    @property
+    def card_pass(self) -> Path:
+        return self.sunset / "rootpass.txt"
+
+    def passwords_set(self) -> list[str]:
+        return self.chpasswd_log.read_text().splitlines() if self.chpasswd_log.exists() else []
 
     @property
     def cam_conf(self) -> Path:
@@ -160,10 +187,84 @@ def test_an_agent_only_card_keeps_the_cameras_own_config(rig):
     rig.run("--auto")
     rig.boot("boot-2")
     rig.run("--auto")                              # finished; card has no config now
-    (rig.sunset / "sunset-agent").write_text("#!/bin/sh\n# agent v2\n")
+    (rig.sunset / "agent.sh").write_text("#!/bin/sh\n# agent v2\n")
     rig.boot("boot-3")
     r = rig.run("--auto")                          # an update card
     assert r.returncode == 1
     assert "agent v2" in (rig.root / "usr/sbin/sunset-agent").read_text()
     assert rig.cam_conf.read_text() == CONF
     assert rig.init_calls() == ["restart", "restart"]
+
+
+# ---- root password -----------------------------------------------------------
+
+def test_the_cards_root_password_is_set_and_leaves_the_card_with_the_token(rig):
+    rig.card_pass.write_text("s3cret-Pw\n")
+    r = rig.run("--auto")
+    assert r.returncode == 1
+    assert rig.passwords_set() == ["root:s3cret-Pw"]
+    assert "set the root password" in r.stdout
+    assert rig.card_pass.exists()      # same rule as the token: not until a reboot
+    rig.boot("boot-2")
+    assert rig.run("--auto").returncode == 0
+    assert not rig.card_pass.exists()
+    assert not rig.card_conf.exists()
+    assert rig.passwords_set() == ["root:s3cret-Pw"]  # not set a second time
+
+
+def test_no_password_on_the_card_leaves_the_cameras_password_alone(rig):
+    rig.run("--auto")
+    assert rig.passwords_set() == []
+
+
+def test_a_password_that_cannot_be_set_is_reported_not_hidden(rig):
+    rig.card_pass.write_text("pw\n")
+    rig.chpasswd.write_text("#!/bin/sh\nexit 1\n")
+    r = rig.run("--auto")
+    assert "could NOT set the root password" in r.stdout
+    assert rig.cam_conf.read_text() == CONF  # the rest of the install still happened
+
+
+# ---- the card's file names ---------------------------------------------------
+
+def test_a_card_missing_the_agent_installs_nothing(rig):
+    (rig.sunset / "agent.sh").unlink()
+    r = rig.run("--auto")
+    assert r.returncode == 1
+    assert "no agent.sh" in r.stdout
+    assert not rig.cam_conf.exists()
+
+
+def test_no_card_file_name_is_the_start_of_another():
+    """Thingino's FAT driver opens "sunset-agent" when asked for
+    "sunset-agent.conf" (see card-install.sh). Every name the script reads or
+    writes on the card must therefore be unrelated to every other."""
+    script = (THINGINO / "card-install.sh").read_text()
+    names = set(re.findall(r'="\$D/(?:\.\./)?([A-Za-z0-9._-]+)"', script))
+    assert {"agent.sh", "initd.sh", "findled.sh", "example.conf", "camera.conf",
+            "rootpass.txt", "stamp.txt", "uenv.txt"} <= names
+    names |= {"install.sh", "runonce.sh", "runonce.done"}
+    low = sorted(n.lower() for n in names)
+    clashes = [(a, b) for a in low for b in low if a != b and b.startswith(a)]
+    assert clashes == []
+
+
+def test_nothing_is_written_beside_uenv_under_a_longer_name(rig):
+    # "uenv.txt.tmp" on the camera *is* uenv.txt: writing it would empty the file.
+    (rig.card / "uenv.txt").write_text("bootdelay=1\nwlan_ssid=Home\nwlan_pass=pw\n")
+    rig.run("--auto")
+    rig.boot("boot-2")
+    rig.run("--auto")
+    assert sorted(p.name for p in rig.card.iterdir()) == ["sunset", "uenv.txt"]
+    assert "$UENV." not in (THINGINO / "card-install.sh").read_text()
+
+
+def test_the_script_only_calls_commands_the_camera_has(rig):
+    # Every path through the script above ran with CAMERA_COMMANDS alone. This
+    # pins the one that bit: a missing command must not pass silently.
+    assert "cmp" not in CAMERA_COMMANDS
+    rig.run("--auto")
+    rig.boot("boot-2")
+    r = rig.run("--auto")
+    assert r.returncode == 0
+    assert "not found" not in r.stdout + r.stderr
