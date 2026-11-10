@@ -107,3 +107,32 @@ phone/app already knows the network).
 7. **No automatic backup custody.** The stock-firmware backup lives on the SD
    card and is lost if the card is reused. The install flow should copy it to
    the cloud, keyed by hardware id.
+
+## Checked afterwards (2026-11-10), for the simpler flow
+
+Read off the live camera (build 2026-11-05) and the app, not assumed:
+
+- **`runonce.sh` works on this build.** `/lib/mdev/automount` runs
+  `<card>/runonce.sh` at mount and writes `runonce.done` when it exits 0. The
+  FAT lookup quirk does **not** fool its flag check (`runonce.done` tests
+  absent next to a `runonce.sh`). So the setup-card auto-install is viable on
+  current Thingino; whether the Aug-14 bundled build runs it is still unknown.
+- **The installer card is plain files on FAT32:** the boot file
+  (`factory_t31_ZMC6tiIDQN`) plus one 16 MB `thingino-<board>.bin` per hardware
+  variant (t31x/atbm6031, t31al/atbm6031, t31x/rtl8189ftv); the one it flashes
+  ends up as `autoupdate-full.yay`. Swapping in current images should remove
+  the `sysupgrade -f` step and the second portal pass. Not yet tried.
+- **The portal on this build** has a Scan button, but still asks for a
+  hostname and a root password and is Thingino-branded. It is static files in
+  `/var/www-portal` (`index.html`, `x/api.cgi`, `x/portal.cgi`): replaceable.
+- **No QR decoder and no Bluetooth on the camera** (`zbarimg`, `quirc`,
+  `ble-provision`, `hciconfig` all absent). The Wyze-style "show a QR code to
+  the lens" pairing would have to be built and cross-compiled.
+- **App:** `/setup/<code>` needs no login and already has a "Waiting for your
+  camera to connect…" step, but `setup-status` reports `registered` as soon
+  as the camera row exists, so it never actually waits for a heartbeat. Every
+  camera must be provisioned beforehand with the admin secret; there is no
+  self-registration, so a generic downloadable card can't work yet. The Pi
+  Wi-Fi onboarding design (sub-project E, `Sunset-Cam-XXXX` hotspot with a
+  network dropdown) and its E–F contract already describe the flow a Thingino
+  camera should plug into.
