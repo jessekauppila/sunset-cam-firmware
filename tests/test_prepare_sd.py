@@ -74,7 +74,29 @@ for a in "$@"; do
   esac
 done
 dd $args
-if [ -n "${FAKE_CORRUPT:-}" ] && echo "$*" | grep -q 'of=/dev/r'; then printf X | dd of="$F/card" bs=1 seek=10 conv=notrunc 2>/dev/null; fi
+d=$(echo "$*" | sed -n 's|.*of=/dev/r\(disk[0-9]*\).*|\1|p')
+[ -n "$d" ] || exit 0
+# What macOS does the moment the write finishes: mounts the card's FAT32
+# volume. The files on it are the ones in the image.
+mkdir -p "$F/vol-$d"
+/bin/cp "$F/imgvol/"* "$F/vol-$d/"
+printf '<?xml version="1.0"?><plist version="1.0"><dict><key>MountPoint</key><string>%s</string></dict></plist>' "$F/vol-$d" > "$F/info-${d}s1.plist"
+if [ -n "${FAKE_CORRUPT:-}" ]; then printf X | dd of="$F/card" bs=1 seek=10 conv=notrunc 2>/dev/null; fi
+if [ -n "${FAKE_CORRUPT_FILE:-}" ]; then printf X | dd of="$F/vol-$d/thingino-board_a.bin" bs=1 seek=5 conv=notrunc 2>/dev/null; fi
+"""
+
+# Serves a directory as the image's mounted volume, in hdiutil's own
+# "device<TAB>type<TAB>mount point" output.
+FAKE_HDIUTIL = r"""#!/bin/sh
+F=$FAKE_DIR
+echo "hdiutil $*" >> "$F/log"
+case $1 in
+attach)
+  printf '/dev/disk99          \tFDisk_partition_scheme         \t\n'
+  printf '/dev/disk99s1        \tWindows_FAT_32                 \t%s\n' "$F/imgvol" ;;
+detach) ;;
+*) echo "fake hdiutil: unexpected $*" >&2; exit 2 ;;
+esac
 """
 
 
@@ -101,7 +123,13 @@ def env(tmp_path):
             plistlib.dumps({"DeviceIdentifier": name, "WholeDisk": True, **info}))
     (fake / "info-_.plist").write_bytes(plistlib.dumps(
         {"ParentWholeDisk": "disk3", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]}))
-    for n, body in (("diskutil", FAKE_DISKUTIL), ("sudo", FAKE_SUDO), ("cp", FAKE_CP)):
+    imgvol = fake / "imgvol"  # the files inside the installer image
+    imgvol.mkdir()
+    (imgvol / "factory_t31_ZMC6tiIDQN").write_bytes(os.urandom(2048))
+    (imgvol / "thingino-board_a.bin").write_bytes(os.urandom(4096))
+    (imgvol / "thingino-board_b.bin").write_bytes(os.urandom(4096))
+    for n, body in (("diskutil", FAKE_DISKUTIL), ("sudo", FAKE_SUDO), ("cp", FAKE_CP),
+                    ("hdiutil", FAKE_HDIUTIL)):
         (bin_ / n).write_text(body)
         (bin_ / n).chmod(0o755)
     img = tmp_path / "sd.img"
@@ -170,7 +198,8 @@ def test_writes_verifies_and_ejects(env):
     assert f"sudo dd if={img} of=/dev/rdisk5" in calls
     assert calls.index("diskutil unmountDisk /dev/disk5") < calls.index("sudo dd")
     assert "diskutil eject /dev/disk5" in calls
-    assert "card matches the image" in r.stdout
+    assert "all 3 files match the image" in r.stdout
+    assert "hdiutil detach" in calls  # the image is not left mounted
     assert "OLDCARD" in r.stdout  # shows what's on the card before erasing
 
 
@@ -183,13 +212,37 @@ def test_unzips_installer(env, tmp_path):
     assert (fake / "card").read_bytes() == img.read_bytes()
 
 
-def test_bad_verification_fails_loudly(env):
+def test_bad_partition_table_fails_loudly(env):
     fake, img, e = env
     e["FAKE_CORRUPT"] = "1"
     r = run(env, "--disk", "disk5", str(img), answer="disk5\n")
     assert r.returncode != 0
-    assert "verification FAILED" in r.stderr
+    assert "verification FAILED: the partition table" in r.stderr
     assert "eject" not in log(env)
+
+
+def test_a_file_that_differs_from_the_image_fails_loudly(env):
+    fake, img, e = env
+    e["FAKE_CORRUPT_FILE"] = "1"
+    r = run(env, "--disk", "disk5", str(img), answer="disk5\n")
+    assert r.returncode != 0
+    assert "MISMATCH: thingino-board_a.bin" in r.stdout
+    assert "verification FAILED: files on disk5" in r.stderr
+    calls = log(env)
+    assert "eject" not in calls
+    assert "hdiutil detach" in calls
+
+
+def test_files_macos_adds_to_the_card_do_not_fail_verification(env):
+    # The reason the old byte-for-byte check could never pass: macOS mounts the
+    # fresh volume and writes to it. Extra files on the card are fine.
+    fake, img, e = env
+    vol = fake / "vol-disk5"
+    (vol / ".fseventsd").mkdir(parents=True)
+    (vol / ".fseventsd" / "fseventsd-uuid").write_text("x")
+    r = run(env, "--disk", "disk5", str(img), answer="disk5\n")
+    assert r.returncode == 0, r.stderr
+    assert "all 3 files match the image" in r.stdout
 
 
 # ---- files mode (--fat32 / --copy / --revert) -------------------------------
