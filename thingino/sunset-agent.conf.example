@@ -1,7 +1,7 @@
 # /etc/sunset-agent.conf — copy this, fill it in, keep it private (it holds the token).
 # Shell syntax: KEY="value", no spaces around "=".
 
-API_BASE="https://sunrisesunset.studio"
+API_BASE="https://www.sunrisesunset.studio"
 
 # From the parent repo's scripts/tier0-create-camera.sh (or /api/cameras/provision).
 CAMERA_ID=""

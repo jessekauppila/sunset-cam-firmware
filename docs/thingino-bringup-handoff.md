@@ -47,5 +47,43 @@ Provision via the API, open `/setup/<claim>` on a phone with PR #502 deployed to
 ### Phase 4: Sonoff B1P
 Confirm an SD installer exists. If yes: flash, then add pan control to the agent (aim at the day's sunset azimuth; outdoors, no window needed). If no: leave it on stock firmware.
 
+## Camera roadmap: which Wyze model, when (resolved 2026-11-08)
+
+Four Wyze options came up; this is the order that trades risk for capability.
+Full Pan-v3 reasoning and sources: `docs/thingino-pan-v3-flash-handoff.md`.
+
+1. **Wyze Cam v3 — now (Phase 1).** `t31x`, 1080p. Mature, prebuilt images,
+   reversible SD install, our `prepare-sd wyze-cam-3` + README test plan already
+   built around it. The de-risking vehicle: prove the whole pipeline here.
+2. **Wyze Cam v4 — image-quality upgrade (optional, later).** `t41`, 2.5K,
+   ATBM6062 wifi, 16 MB flash. SecureBoot defeated Oct 2026; SD-installable
+   *today* (`wyze-cam-4` in wltechblog, reversible), but only on Thingino master
+   / no prebuilt update stream yet, and two sensor variants (os04d10 confirmed,
+   gc4653 not). Good step up in frames, no panning. Not worth it for the *first*
+   camera.
+3. **Wyze Cam Pan v3 — if panning is wanted sooner.** `t31x` + pan/tilt, profile
+   in-tree, but **no installer, broken stock SD recovery, no provable restore
+   path** — the brick-risk research project. Tracked in issue #19.
+4. **Wyze Cam Pan v4 — the north-star target (Jesse's real goal).** `t32nq` +
+   **SC835HAI 4K sensor** + **ATBM6162S** wifi, 16 MB NOR, 360° pan/tilt + AI
+   tracking. FCC ID `2AUIUWYZECPAN4` (2025-08-19). **Note the SoC is T32N — a
+   different chip and a different crack from the Cam v4's T41**, so "build on the
+   v4 defeat" does not transfer. Instead it has its *own* live effort:
+   - Thingino **already boots on it** (builds labelled `master+…, 2026-11-05`;
+     live-unit bugs #1925/#1933, profile fixes PR #1946).
+   - A **no-open-case SD installer exists**: `github.com/gtxaspec/wyze-campan4-sd-install`,
+     which bypasses the stock U-Boot RSA-PSS signature via **CVE-2026-46728**
+     (FIT hashed-nodes clone) and is *designed* to dump + SHA256-verify the full
+     16 MB NOR before writing.
+   - **But it is bricking today** (issue #1927, 2026-11-06): the backup came out
+     useless (only the 192 KiB u-boot partition, rest 0 KiB) and recovery needed
+     the SPI flash pins held + a web-flash. So the verified-backup safety is not
+     actually working yet.
+   - **Verdict: the Pan v4 is the target, and it is moving fast — but do not
+     flash it until #1927 is fixed and the gtxaspec installer's verified backup
+     demonstrably produces a full 16 MB dump.** Watch that repo + Thingino's
+     campan4 issues. Horizon tracked in its own issue.
+   - Pan v4 console for the CP2102 UART: **`ttyS1`, 115200 8N1** (per #1927).
+
 ## Repo conventions
 App repo: read its `CLAUDE.md` (worktrees via `scripts/wt.sh`, explicit `git add`, arm auto-merge rather than pressing Merge, apply migrations before merging code that reads them). Jesse merges PRs.

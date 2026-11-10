@@ -27,7 +27,7 @@ CONF="${SUNSET_CONF:-/etc/sunset-agent.conf}"
 STATE_DIR="${SUNSET_STATE_DIR:-/tmp/sunset-agent}"
 
 # ---- defaults (override in $CONF) -------------------------------------------
-API_BASE="https://sunrisesunset.studio"
+API_BASE="https://www.sunrisesunset.studio"
 CAMERA_ID=""
 DEVICE_TOKEN=""
 CLAIM_CODE=""            # set for claim-code onboarding; leave empty for tier0 cameras

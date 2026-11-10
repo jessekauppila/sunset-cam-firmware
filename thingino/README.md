@@ -114,7 +114,7 @@ image it chose after first boot (`/etc/os-release`).
    ```sh
    date -u                                  # correct UTC time? (ntpd)
    prudyntctl snapshot -c 0 > /tmp/t.jpg; ls -l /tmp/t.jpg   # a JPEG of ~100–400 KB
-   curl -sS -o /dev/null -w '%{http_code}\n' https://sunrisesunset.studio   # 200, i.e. TLS works
+   curl -sS -o /dev/null -w '%{http_code}\n' https://www.sunrisesunset.studio   # 200, i.e. TLS works
    which jct awk logger soc                 # all present
    soc -s                                   # SoC serial, used for the hardware id
    ```
@@ -137,14 +137,14 @@ with `LAT`, `LNG` and `AZIMUTH_DEG`.
 
 **B. Claim code + phone setup (aim from the phone, printed mount).**
 ```sh
-curl -sS -X POST https://sunrisesunset.studio/api/cameras/provision \
+curl -sS -X POST https://www.sunrisesunset.studio/api/cameras/provision \
   -H "Authorization: Bearer $CRON_SECRET" -H 'Content-Type: application/json' \
   -d '{"hardware_id":"thingino-<soc -s output>","device_class":"thingino-wyze-v3","label":"wyze-1"}'
 ```
 It returns `camera_id`, `claim_code` and `device_token` (shown once). Put all
 three in the config, with `HARDWARE_ID` exactly as provisioned and
 `CAMERA_MODEL="wyze-v3"`. Leave `AZIMUTH_DEG` empty. Then open
-`https://sunrisesunset.studio/setup/<claim_code>` on your phone. The app knows
+`https://www.sunrisesunset.studio/setup/<claim_code>` on your phone. The app knows
 the camera model, so it uses this camera's field of view, measures your window,
 and tells you which wedge to print: `hardware/window-wedge-mount.scad` with
 `wedge_deg`, `tall_end` and `camera` filled in. Once you submit, the camera's
