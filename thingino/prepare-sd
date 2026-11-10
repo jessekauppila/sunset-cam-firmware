@@ -200,10 +200,14 @@ stage_agent() {
 # Run on the camera after Thingino's first boot: sh /mnt/mmcblk0p1/sunset/install.sh
 set -e
 D=$(cd "$(dirname "$0")" && pwd)
+# Thingino's FAT driver resolves a *missing* long name to a sibling with the
+# same 8.3 prefix (sunset-agent.conf -> sunset-agent), so [ -f ] lies here.
+# Ask the directory listing instead.
+has() { ls -1 "$D" | grep -qx "$1"; }
 cp "$D/sunset-agent" /usr/sbin/sunset-agent && chmod 755 /usr/sbin/sunset-agent
 cp "$D/find-status-led" /usr/sbin/find-status-led && chmod 755 /usr/sbin/find-status-led
 cp "$D/S99sunset-agent" /etc/init.d/S99sunset-agent && chmod 755 /etc/init.d/S99sunset-agent
-if [ -f "$D/sunset-agent.conf" ]; then
+if has sunset-agent.conf; then
 	cp "$D/sunset-agent.conf" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
 	rm -f "$D/sunset-agent.conf"   # it holds the device token
 	echo "installed /etc/sunset-agent.conf (removed from the card)"
