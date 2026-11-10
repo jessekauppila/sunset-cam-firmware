@@ -369,7 +369,8 @@ mbr=$(mktemp)
 sudo dd if="/dev/r$DISK" bs=512 count=1 of="$mbr" 2>/dev/null
 head -c 512 "$IMG" | cmp -s - "$mbr" || { rm -f "$mbr"; die "verification FAILED: the partition table on $DISK doesn't match the image. Try another card."; }
 rm -f "$mbr"
-IMGVOL=$(hdiutil attach -readonly -nobrowse "$IMG" 2>/dev/null | awk '/\/Volumes\//{sub(/.*\/Volumes\//,"/Volumes/"); print; exit}')
+# hdiutil prints "device<TAB>type<TAB>mount point" per partition.
+IMGVOL=$(hdiutil attach -readonly -nobrowse "$IMG" 2>/dev/null | awk -F'\t' '$3 ~ /^\// {print $3; exit}')
 [ -n "$IMGVOL" ] || die "could not mount the image to verify against (hdiutil attach)"
 mp=$(mount_point_of "$DISK")
 bad=0 n=0
