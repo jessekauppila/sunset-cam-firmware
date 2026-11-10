@@ -200,10 +200,14 @@ stage_agent() {
 # Run on the camera after Thingino's first boot: sh /mnt/mmcblk0p1/sunset/install.sh
 set -e
 D=$(cd "$(dirname "$0")" && pwd)
+# Thingino's FAT driver resolves a *missing* long name to a sibling with the
+# same 8.3 prefix (sunset-agent.conf -> sunset-agent), so [ -f ] lies here.
+# Ask the directory listing instead.
+has() { ls -1 "$D" | grep -qx "$1"; }
 cp "$D/sunset-agent" /usr/sbin/sunset-agent && chmod 755 /usr/sbin/sunset-agent
 cp "$D/find-status-led" /usr/sbin/find-status-led && chmod 755 /usr/sbin/find-status-led
 cp "$D/S99sunset-agent" /etc/init.d/S99sunset-agent && chmod 755 /etc/init.d/S99sunset-agent
-if [ -f "$D/sunset-agent.conf" ]; then
+if has sunset-agent.conf; then
 	cp "$D/sunset-agent.conf" /etc/sunset-agent.conf && chmod 600 /etc/sunset-agent.conf
 	rm -f "$D/sunset-agent.conf"   # it holds the device token
 	echo "installed /etc/sunset-agent.conf (removed from the card)"
@@ -213,6 +217,7 @@ elif [ ! -f /etc/sunset-agent.conf ]; then
 fi
 echo "installed sunset-agent, find-status-led, S99sunset-agent"
 EOS
+	dot_clean -m "$mp/sunset" 2>/dev/null || true   # drop the ._* sidecars macOS adds on FAT
 	say "Staged sunset/ on the card (${conf:+with your config, }run 'sh /mnt/mmcblk0p1/sunset/install.sh' on the camera)."
 }
 
@@ -306,8 +311,8 @@ fi
 
 say ""
 say "Installer:"
-WORK=''
-trap '[ -z "$WORK" ] || rm -rf "$WORK"' EXIT
+WORK='' IMGVOL=''
+trap '[ -z "$IMGVOL" ] || hdiutil detach "$IMGVOL" >/dev/null 2>&1; [ -z "$WORK" ] || rm -rf "$WORK"' EXIT
 resolve_image "$SRC"
 img_bytes=$(stat -f %z "$IMG")
 check "$DISK"
@@ -327,15 +332,35 @@ say "Writing (sudo will ask for your password; this takes a minute)..."
 sudo dd if="$IMG" of="/dev/r$DISK" bs=1m status=progress
 sync
 
+# Verify. A byte-for-byte comparison can't work here: the moment dd closes the
+# device macOS re-reads the partition table, auto-mounts the FAT32 volume and
+# writes .fseventsd/.Spotlight-V100 into it, which also rewrites the FSInfo
+# sector (seen on two cards in a row: "differ: char 1049577" = partition start +
+# the free-cluster count). So check what the camera actually reads: the MBR, and
+# every file in the image against the same file on the card.
 say "Verifying..."
-if [ $((img_bytes % 1048576)) -eq 0 ]; then
-	bs=1m count=$((img_bytes / 1048576))
-else
-	bs=512 count=$(((img_bytes + 511) / 512))
-fi
-sudo dd if="/dev/r$DISK" bs="$bs" count="$count" 2>/dev/null | head -c "$img_bytes" | cmp -s - "$IMG" ||
-	die "verification FAILED: what's on $DISK doesn't match the image. Try another card."
-say "  card matches the image"
+mbr=$(mktemp)
+sudo dd if="/dev/r$DISK" bs=512 count=1 of="$mbr" 2>/dev/null
+head -c 512 "$IMG" | cmp -s - "$mbr" || { rm -f "$mbr"; die "verification FAILED: the partition table on $DISK doesn't match the image. Try another card."; }
+rm -f "$mbr"
+# hdiutil prints "device<TAB>type<TAB>mount point" per partition.
+IMGVOL=$(hdiutil attach -readonly -nobrowse "$IMG" 2>/dev/null | awk -F'\t' '$3 ~ /^\// {print $3; exit}')
+[ -n "$IMGVOL" ] || die "could not mount the image to verify against (hdiutil attach)"
+mp=$(mount_point_of "$DISK")
+bad=0 n=0
+for f in "$IMGVOL"/*; do
+	[ -f "$f" ] || continue
+	n=$((n + 1))
+	if ! cmp -s "$f" "$mp/$(basename "$f")"; then
+		say "  MISMATCH: $(basename "$f")"
+		bad=1
+	fi
+done
+hdiutil detach "$IMGVOL" >/dev/null 2>&1 || true
+IMGVOL=''
+[ "$bad" = 0 ] || die "verification FAILED: files on $DISK don't match the image. Try another card."
+[ "$n" -gt 0 ] || die "verification FAILED: the image holds no files to compare"
+say "  partition table and all $n files match the image"
 
 if [ "$STAGE" = 1 ]; then
 	stage_agent "$DISK" "$CONF"
